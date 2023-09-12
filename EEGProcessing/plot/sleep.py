@@ -1,0 +1,1131 @@
+# -*- coding: UTF-8 -*-
+"""
+@Project: EEGProcessing_V3 
+@File: sleep.py
+@IDE: PyCharm 
+@Author: Xueqiang Wang
+@Date: 2023/9/6 11:28 
+@Description:  
+"""
+import copy
+import datetime
+from math import ceil
+
+import numpy as np
+import scipy
+from PyQt5.QtCore import QStringListModel, Qt, QTimer
+from PyQt5.QtGui import QKeySequence
+from PyQt5.QtWidgets import QMainWindow, QDialog, QFileDialog, QMessageBox, QShortcut
+from matplotlib import pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from scipy import signal
+from scipy.signal import butter, welch
+
+from EEGProcessing.gui.plot.labels import Ui_label
+from EEGProcessing.gui.plot.sleep import Ui_sleep
+from EEGProcessing.gui.plot.spectrum import Ui_spectrum
+from EEGProcessing.utils.utils import second2time, lst2group
+
+
+class sleep(QMainWindow, Ui_sleep):
+    """
+    Sleep class, including plots and analysis
+    """
+
+    def __init__(self, parent=None, data=None, labels=None, label_file=None,
+                 SR=256, epoch_length=5, acquisition_time=None):
+        """
+        :param parent:
+        :param data: All channel data, depends on the numbers of its column
+        :param labels: Label data, including Marker label, start-end label and sleep stage label
+                        labels data format: [Marker label, start-end label, sleep stage label]
+                        Marker label data format:
+                        ['timestamp, time_sec, timestamp, time_sec, label_type, label_name', ...]
+                        start-end label data format:
+                        ['start_timestamp, start_sec, end_timestamp, end_sec, label_type, label_name', ...]
+                        sleep stage label data format:
+                        ['start_timestamp, start_sec, end_timestamp, end_sec, label_type, label_name', ...]
+        :param label_file: The file path of label data, can get other information from it,
+                            and save it to the path after labeling
+        :param SR: Sampling rate
+        :param epoch_length:
+        :param acquisition_time:
+        """
+
+        # The first time load this class, there is no data pass in, check it and pass if the data is None
+        if data is None:
+            return
+
+        # Initialize window and setup widgets
+        super(sleep, self).__init__(parent=parent)
+        self.setupUi(self)
+
+        # Receive the data passed in
+        self.data = data
+        self.label_file = label_file
+        # Three types of label, convert labels to manipulation format, mainly the time format
+        # Change the sleep_stage_labels to sec-label format, saving the time for labeling
+        # After converting, the labels' format is:
+        # marker_labels:
+        # [[timestamp, time_sec, timestamp, time_sec, label_type, label_name], ..]
+        # --> [[time_sec, label_name], ...]
+        # start_end_labels:
+        # [[start_timestamp, start_sec, end_timestamp, end_sec, label_type, label_name],..]
+        # --> [[start_sec, end_sec, label_name], ...]
+        # sleep_stage_labels:
+        # [[start_timestamp, start_sec, end_timestamp, end_sec, label_type, label_name], ..]
+        # --> [[start_sec, end_sec, label_type]]
+        self.marker_labels = [[int(each.split(', ')[1]), each.split(', ')[5]] for each in labels[0]]
+        self.start_end_labels = [[int(each.split(', ')[1]), int(each.split(', ')[3]), each.split(', ')[5]]
+                                 for each in labels[1]]
+        temp_sleep_stage_labels = [[int(each.split(', ')[1]), int(each.split(', ')[3]), int(each.split(', ')[4])]
+                                   for each in labels[2]]
+        self.sleep_stage_labels = []
+        for each in temp_sleep_stage_labels:
+            self.sleep_stage_labels += [[sec, each[2]] for sec in range(each[0], each[1] + 1)]
+
+        self.SR = SR
+        self.epoch_length = epoch_length
+        self.stage_type_dict = {1: 'REM', 2: 'NREM', 3: 'Wake'}
+        self.acquisition_time = acquisition_time
+
+        # Initialize some widgets' initial value and setup
+        self.epochCustomRadio.setChecked(False)
+        self.epochShow.setDisabled(True)
+        self.total_seconds = ceil(self.data.shape[1] / self.SR)
+        self.epochShow.setMaximum(int(self.total_seconds / self.epoch_length))
+        self.epoch_selector_dict = {0: 60, 1: 300, 2: self.epoch_length, 3: 3 * self.epoch_length,
+                                    4: 5 * self.epoch_length,
+                                    5: 9 * self.epoch_length, 6: 30, 7: 1800, 8: 3600}
+        self.autoScrollCheckBox.setChecked(True)  # Select auto scroll
+        self.markerRadio.setChecked(True)  # Select mark radio
+
+        # Initialize other attributes
+        self.is_saved = True  # Check whether the labels are saved into the label_file
+        self.channel_num = self.data.shape[0]
+        self.channel_list = [str(each) for each in range(1, self.channel_num + 1)]  # Name of each channel in a list
+        # Channels index to be show in the signal area, can select by user
+        self.channel_show = list(range(self.channel_num))
+        self.data_show = self.data  # Which channel data to show, connect to self.channel_show
+        self.sample_num = self.data.shape[1]  # Number of samples
+        self.samples_x = range(self.sample_num)  # For building figure x-axis
+
+        # About epoch and current window attributes
+        self.position_sec = 0  # Current position of signal figures
+        self.epoch_show = 5  # Number of epoch to be shown in current window
+        # Current window size
+        self.x_window_size_sec = self.epoch_selector_dict[self.epochSelector.currentIndex()]
+        self.x_window_size = int(self.x_window_size_sec * self.SR)  # Current window size of sampling points
+        self.y_lims = [0] * self.channel_num  # y-axis lim of each channel data
+
+        # Initialize signalArea figure
+        self.signal_figure = plt.figure()
+        # +1 is for time-frequency plot
+        self.signal_ax = self.signal_figure.subplots(nrows=self.channel_num + 1, ncols=1)
+        self.signal_figure.set_tight_layout(True)
+        self.signal_figure.tight_layout(pad=0, w_pad=0, h_pad=0)
+        self.signal_figure.subplots_adjust(hspace=0, left=0.02, right=0.97, top=0.97)  # Adjust subplots
+        # Put the figure to a canvas
+        self.signal_canvas = FigureCanvas(self.signal_figure)
+        # Add button click release event for signal canvas
+        self.signal_canvas.mpl_connect("button_release_event", self.click_signal)
+        # Put signal canvas to signalScrollArea
+        self.signalScrollArea.setWidget(self.signal_canvas)
+        # Add axvline to signal figure for visualizing epoch
+        self.signal_axvline = None
+
+        # Initialize sleep stage area figure
+        self.sleep_stage_figure = plt.figure(layout='constrained')
+        self.sleep_ax = self.sleep_stage_figure.subplots(nrows=1, ncols=1)
+        self.sleep_stage_canvas = FigureCanvas(self.sleep_stage_figure)
+        self.sleepStageArea.setWidget(self.sleep_stage_canvas)
+        # Click sleep stage area, jump to that time
+        self.sleep_stage_canvas.mpl_connect('button_press_event', self.press_sleep_stage)
+        # Add axvline for current time on sleep stage figure
+        self.sleep_axvline = self.sleep_ax.axvline(self.position_sec, color='gray', alpha=0.8)
+
+        # Start-end label, if there is two values in the list, then store them to start_end_labels list
+        self.start_end = []
+        self.start_end_vline = None
+        # Initialize labels to display in the label dialog for selecting
+        self.marker_label_list = ['label1', 'label2', 'label3', 'label4']
+        self.start_end_label_list = ['Slow Wave', 'Spindle', 'start-end label1', 'start-end label2']
+        # Initialize label dialog
+        self.label_dialog = label_dialog(marker_label=self.marker_label_list, start_end_label=self.start_end_label_list)
+        self.spectrum_dialog = spectrum_dialog()
+
+        # Set default channel for time frequency analysis
+        self.default_TF_channel = 0
+
+        # Label current window with different sleep stage, only with shortcut
+        self.remSc = QShortcut(QKeySequence('Ctrl+1'), self)
+        self.remSc.activated.connect(self.REM_window)
+        self.nremSc = QShortcut(QKeySequence('Ctrl+2'), self)
+        self.nremSc.activated.connect(self.NREM_window)
+        self.wakeSc = QShortcut(QKeySequence('Ctrl+3'), self)
+        self.wakeSc.activated.connect(self.Wake_window)
+
+        # Set a timer
+        self.save_timer = QTimer(self)
+        self.save_timer.timeout.connect(self.auto_save)
+
+    def my_sleep(self):
+        """
+        Mainly for setup widgets
+        :return:
+        """
+
+        # Time slider time range
+        self.timeSlider.setRange(0, self.total_seconds)
+        # Time slider click and scroll event
+        self.timeSlider.valueChanged.connect(self.slider_change)
+        self.timeSlider.setSingleStep(1)
+
+        # Two time editor area, seconds and time stamp
+        self.secTimeEdit.setMaximum(self.total_seconds - 1)
+        self.dateTimeEdit.setMaximumDateTime(datetime.datetime(2000, 1, 1, 0, 0, 0) + datetime.timedelta(
+            seconds=self.total_seconds - 1))
+        # Time editor time to go
+        self.dateTimeEdit.dateTimeChanged.connect(self.data_time_go)
+        self.secTimeEdit.valueChanged.connect(self.sec_time_go)
+
+        # Next and previous button
+        self.previousWinBt.clicked.connect(self.update_previous_position)
+        self.nextWinBt.clicked.connect(self.update_next_position)
+
+        # Scaler buttons, operate the selected channel
+        self.reductionBt.clicked.connect(self.reduction_y_lim)
+        self.amplifyBt.clicked.connect(self.amplify_y_lim)
+
+        # Add channel to channel list container
+        self.add_channel()
+
+        # Epoch selector or custom
+        self.epochShow.valueChanged.connect(self.set_x_window_sec)
+        self.epochSelector.currentIndexChanged.connect(self.set_x_window_sec)
+        self.epochCustomRadio.clicked.connect(self.check_epoch_custom)
+
+        # Channel operation
+        self.channelShowBt.clicked.connect(self.show_channel)
+        self.channelHideBt.clicked.connect(self.hide_channel)
+        self.channelDeleteBt.clicked.connect(self.delete_channel)
+
+        # Filter function
+        self.hz_edit_ability()
+        self.passSelecter.currentIndexChanged.connect(self.hz_edit_ability)
+        self.filterBt.clicked.connect(self.filter)
+
+        # Spectrum
+        self.spectrumBt.clicked.connect(self.draw_fft_freq)
+
+        # Select default channel for time_frequency
+        self.defaultTFBt.clicked.connect(self.set_default_TF_channel)
+
+        # Function for labelBt
+        self.labelBt.clicked.connect(self.label_start_end)
+
+        # Label selected start end area with different sleep stage, with three buttons or shortcut
+        self.remBt.clicked.connect(self.REM_start_end)
+        self.nremBt.clicked.connect(self.NREM_start_end)
+        self.wakeBt.clicked.connect(self.Wake_start_end)
+
+        # Save labels
+        self.saveBt.clicked.connect(self.save)
+
+        # Draw figure
+        self.window_plot()
+        self.update_sleep_stage()
+
+        # Set a timer observe the save event, every 5 mins auto save
+        self.save_timer.start(60 * 5 * 1000)
+
+        # Save selected channels' data
+        self.saveDataBt.clicked.connect(self.save_selected_data)
+
+    def window_plot(self, reset_y_lims=True):
+        """
+        Main function, plot and update all the figures
+
+        :param reset_y_lims: When amplify and reduction was called, don't adapt y_lims with current window
+        :return:
+        """
+
+        # Update sleep figure's avvline
+        self.sleep_axvline.remove()
+        self.sleep_axvline = self.sleep_ax.axvline(self.position_sec, color='gray', alpha=0.8)
+        self.sleep_stage_figure.canvas.draw()
+        self.sleep_stage_figure.canvas.flush_events()
+
+        position = int(self.position_sec * self.SR)  # Convert to point
+
+        if position + self.x_window_size > self.sample_num:
+            # Jump to end
+            position = self.sample_num - self.x_window_size
+        elif position < 0:
+            position = 0
+
+        self.position_sec = int(position / self.SR)
+
+        x = list(self.samples_x[position: position + self.x_window_size])  # Construct x-axis index
+
+        # Plot time-frequency figure at signal_ax[0]
+        self.signal_ax[0].clear()
+        # F is frequency resolution, T is time resolution, and Sxx is power matrix,
+        # the three variables' format show as below:
+        # F: from 0 to 152.5 (Half of sampling rate), contains 129 data points
+        # T: time resolution, depends on window size
+        # Sxx: power density, shape of (F.shape, T.shape)
+        F, T, Sxx = signal.spectrogram(
+            self.data[self.default_TF_channel][position: position + self.x_window_size], fs=self.SR,
+            nperseg=self.SR * self.epoch_length, noverlap=int(self.SR * self.epoch_length / 2))
+        # Sxx = numpy.log(Sxx)
+        cmap = plt.cm.get_cmap('jet')
+        self.signal_ax[0].pcolormesh(T, F, Sxx, cmap=cmap)
+        # self.signal_ax[0].colorbar()
+
+        self.signal_ax[0].set_ylim(0, 30)
+
+        # If marker label or start-end label is in current window, show them
+        show_labels_mark = [each for each in self.marker_labels if int(each[0] * self.SR) in x]
+        show_labels_start_end = []
+        for each in self.start_end_labels:
+            if int(each[0] * self.SR) in x:
+                show_labels_start_end.append([each[0], 's-' + each[2]])
+            if int(each[1] * self.SR) in x:
+                show_labels_start_end.append([each[1], 'e-' + each[2]])
+
+        # Update y_lims with channel_show
+        # self.y_lims = [self.y_lims[each] for each in self.]
+        # Traverse all channels and plot them
+        for i in range(1, len(self.channel_show) + 1):
+            self.signal_ax[i].clear()
+
+            # Add axvline of each label in this window
+            for vline_pos in show_labels_mark:
+                self.signal_ax[i].axvline(vline_pos[0] * self.SR, color='red', alpha=1)
+            for vline_pos in show_labels_start_end:
+                self.signal_ax[i].axvline(vline_pos[0] * self.SR, color='dodgerblue', alpha=1)
+            if self.start_end and self.start_end[0] * self.SR in x:
+                self.signal_ax[i].axvline(self.start_end[0] * self.SR, color='lime', alpha=1)
+            if len(self.start_end) == 2 and self.start_end[1] * self.SR in x:
+                self.signal_ax[i].axvline(self.start_end[1] * self.SR, color='lime', alpha=1)
+            y = self.data_show[i - 1][position: position + self.x_window_size]
+
+            if reset_y_lims:
+                self.y_lims[self.channel_show[i - 1]] = y.max()
+            self.signal_ax[i].set_ylim(ymin=-self.y_lims[self.channel_show[i - 1]],
+                                       ymax=self.y_lims[self.channel_show[i - 1]])
+            self.signal_ax[i].set_xlim(xmin=position, xmax=position + self.x_window_size)
+            self.signal_ax[i].plot(x, y, color='black', linewidth=0.5)
+
+            self.signal_ax[i].xaxis.set_ticks([])
+            # self.signal_ax[i].yaxis.set_ticks([0], [self.channel_list[self.channel_show[i]]])
+            self.signal_ax[i].yaxis.set_ticks([])
+            self.signal_ax[i].set_ylabel(self.channel_list[self.channel_show[i - 1]])
+
+            # Add axvline of each epoch
+            for axvline_positions in range(
+                    self.position_sec, self.position_sec + self.x_window_size_sec, self.epoch_length):
+                self.signal_ax[i].axvline(axvline_positions * self.SR, color='green', alpha=0.1)
+
+        # Add annotation of each axvline (except epoch line)
+        for each in show_labels_mark:
+            self.signal_ax[1].annotate(each[1], xy=(each[0] * self.SR, self.y_lims[self.channel_show[0]] -
+                                                    self.y_lims[self.channel_show[0]] * 0.2), color='red')
+        for each in show_labels_start_end:
+            self.signal_ax[1].annotate(each[1], xy=(each[0] * self.SR, self.y_lims[self.channel_show[0]] -
+                                                    self.y_lims[self.channel_show[0]] * 0.2), color='dodgerblue')
+        if self.start_end and self.start_end[0] * self.SR in x:
+            self.signal_ax[1].annotate('start', xy=(self.start_end[0] * self.SR, self.y_lims[self.channel_show[0]] -
+                                                    self.y_lims[self.channel_show[0]] * 0.2), color='lime')
+        if len(self.start_end) == 2 and self.start_end[1] * self.SR in x:
+            self.signal_ax[1].annotate('end', xy=(self.start_end[1] * self.SR, self.y_lims[self.channel_show[0]] -
+                                                  self.y_lims[self.channel_show[0]] * 0.2), color='lime')
+
+        # Set xtick for the last figure, because all the figures share the same x-axis
+        self.signal_ax[-1].set_xticks(
+            [each * self.SR for each in
+             range(self.position_sec, self.position_sec + self.x_window_size_sec + 1, self.epoch_length)],
+            [each for each in
+             range(self.position_sec, self.position_sec + self.x_window_size_sec + 1, self.epoch_length)], rotation=90
+        )
+        self.signal_figure.canvas.draw()  # Redraw canvas
+        self.signal_figure.canvas.flush_events()  # Flush canvas
+
+        # Update the value of secTimeEdit and dateTimeEdit
+        self.secTimeEdit.setValue(self.position_sec)
+        date_time = datetime.datetime(2000, 1, 1, 0, 0, 0) + datetime.timedelta(seconds=self.position_sec)
+        self.dateTimeEdit.setDateTime(date_time)
+
+    def update_sleep_stage(self):
+        """
+        Update sleep stage figure, in the bottom
+        :return:
+        """
+
+        self.sleep_ax.clear()
+        # Flush sleep stage axvlines
+        self.sleep_axvline.remove()
+        self.sleep_axvline = self.sleep_ax.axvline(self.position_sec, color='gray', alpha=0.8)
+
+        # Show marker labels and start-end labels in sleep stage figure
+        show_labels_mark = [each[0] for each in self.marker_labels]
+        for vline_pos in show_labels_mark:
+            self.sleep_ax.axvline(vline_pos, color='red', alpha=1)
+        if self.start_end:
+            self.sleep_ax.axvline(self.start_end[0], color='lime', alpha=1)
+            if len(self.start_end) == 2:
+                self.sleep_ax.axvline(self.start_end[1], color='lime', alpha=1)
+
+        self.sleep_ax.plot(range(self.total_seconds), self.sleep_stage_labels, linewidth=1)
+        self.sleep_ax.set_ylim(0.5, 3.5)
+        self.sleep_ax.set_xlim(0, self.total_seconds - 1)
+        self.sleep_ax.xaxis.set_ticks([])
+        self.sleep_ax.yaxis.set_ticks(range(1, 4), ['REM', 'NREM', 'Wake'])
+
+        self.sleep_stage_figure.canvas.draw()
+        self.sleep_stage_figure.canvas.flush_events()
+
+    def slider_change(self):
+        """
+        Slider value changes, redraw
+        :return:
+        """
+
+        self.position_sec = self.timeSlider.value()
+        self.window_plot()
+
+    def check_epoch_custom(self):
+        """
+        If select custom epoch radio, disable the selector
+        :return:
+        """
+
+        if self.epochCustomRadio.isChecked():
+            self.epochSelector.setDisabled(True)
+            self.epochShow.setEnabled(True)
+
+        else:
+            self.epochSelector.setEnabled(True)
+            self.epochShow.setDisabled(True)
+
+    def set_x_window_sec(self):
+        """
+        Check is epochSelector or epoch custom, and pass value to x_window_size_sec
+        :return:
+        """
+        if self.epochCustomRadio.isChecked():
+            self.epoch_show = self.epochShow.value()
+            self.x_window_size_sec = self.epoch_show * self.epoch_length
+        else:
+            self.x_window_size_sec = self.epoch_selector_dict[self.epochSelector.currentIndex()]
+        self.x_window_size = int(self.x_window_size_sec * self.SR)
+        self.window_plot()
+
+    def click_signal(self, event):
+        """
+        Click signalScrollArea and will trigger this function
+        Three radios correspond three different type of marker:
+        Marker: label the second clicked, popup a dialog to select a label,
+                will show axvline and annotation both in signal plot area and sleep stage plot area
+        Start-end: click to activate start axvline and annotation, and click again to activate end axvline
+                    and annotation, then popup a dialog to select a label type
+        Start-end for stage: similar to Start-end, but won't popup a dialog, can choose which sleep stage to
+                                label by clicking button, or use shortcut
+
+        :return:
+        """
+
+        # Get current second
+        sec = int(event.xdata / self.SR)
+
+        # If clicked right button and there is a label, alert and delete this label
+        if event.button == 3:
+            # marker_secs = [each[0] for each in self.marker_labels]
+            # if sec in marker_secs:
+            #     self.marker_labels.remove(self.marker_labels[marker_secs.index(sec)])
+            for idx, label in enumerate(self.marker_labels):
+                if sec in label:
+                    self.marker_labels.pop(idx)
+
+            for idx, label in enumerate(self.start_end_labels):
+                if sec in label:
+                    self.start_end_labels.pop(idx)
+
+        # If markerRadio selected
+        elif self.markerRadio.isChecked():
+
+            # Popup dialog for selection, cancel to quit
+            self.show_dialog(type_=0)
+            if self.label_dialog.closed:
+                return
+            label_name = self.label_dialog.label_name
+
+            # If the second point already exist in marker_labels, remove it
+            if (sec, label_name) in self.marker_labels:
+                self.marker_labels.remove([sec, label_name])
+            else:
+                # Add current second to marker_labels
+                self.marker_labels.append([sec, label_name])
+                self.marker_labels = sorted(list(self.marker_labels), key=lambda x: x[0])
+            self.is_saved = False
+
+        # If startEndRadio selected
+        elif self.startEndRadio.isChecked():
+            if not self.start_end:
+                self.start_end.append(sec)
+            elif len(self.start_end) == 2:
+                # Clear
+                self.start_end = []
+                self.start_end.append(sec)
+            else:
+                sec = ceil(event.xdata / self.SR)
+
+                # If end second is less than start second, alert
+                if sec <= self.start_end[0]:
+                    QMessageBox.about(self, "Error", "End should be larger than Start!")
+                    return
+
+                self.start_end.append(sec)
+
+        self.update_sleep_stage()
+        self.window_plot()
+
+    def show_dialog(self, type_=0):
+        """
+        Show dialog for label
+        :return:
+        """
+
+        self.label_dialog.type_ = type_
+        self.label_dialog.show_contents()
+        self.label_dialog.exec()
+
+    def draw_fft_freq(self):
+        """
+        Draw spectrum with FFT, show after click 'spectrum' button
+        https://vimsky.com/examples/usage/python-scipy.signal.welch.html
+        :return:
+        """
+
+        selected_channel = [each.row() for each in self.channelList.selectedIndexes()]
+        if len(selected_channel) != 1:
+            QMessageBox.about(self, "Info", "Please select only(at least) one channel!")
+            return
+        elif len(self.start_end) != 2:
+            QMessageBox.about(self, "Info", "Please select a start end area!")
+            return
+
+        # Initialize a spectrum dialog
+        self.spectrum_dialog.setWindowTitle('Spectrum: ' + str(self.start_end[0]) + '~' + str(self.start_end[1]))
+        data = self.data[selected_channel[0]][
+               int(self.start_end[0] * self.SR): int(self.start_end[1] * self.SR)]
+        f, Pxx_den = welch(data, self.SR, nperseg=self.epoch_length * self.SR)
+        # plt.plot(f, Pxx_den)
+        # plt.show()
+
+        self.spectrum_dialog.x = f
+        self.spectrum_dialog.y = Pxx_den
+        self.spectrum_dialog.draw()
+        self.spectrum_dialog.activateWindow()
+        self.spectrum_dialog.setWindowState(self.spectrum_dialog.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
+        self.spectrum_dialog.showNormal()
+
+    def press_sleep_stage(self, event):
+        """
+        Press sleep stage figure and will jump to that time
+        :return:
+        """
+
+        self.position_sec = int(event.xdata)
+        self.window_plot()
+
+    def reduction_y_lim(self):
+        """
+        Reduction y lim of selected channel
+        :return:
+        """
+
+        selected_channel = [each.row() for each in self.channelList.selectedIndexes()]
+        if len(selected_channel) == 0:
+            QMessageBox.about(self, "Info", "Please select at least one channel to reduction!")
+            return
+        self.y_lims = [self.y_lims[each] * 1.1 if each in selected_channel else self.y_lims[each]
+                       for each in range(self.channel_num)]
+        self.window_plot(reset_y_lims=False)
+
+    def amplify_y_lim(self):
+        selected_channel = [each.row() for each in self.channelList.selectedIndexes()]
+        if len(selected_channel) == 0:
+            QMessageBox.about(self, "Info", "Please select at least one channel to amplify!")
+            return
+        self.y_lims = [self.y_lims[each] * 0.9 if each in selected_channel else self.y_lims[each]
+                       for each in range(self.channel_num)]
+        self.window_plot(reset_y_lims=False)
+
+    def label_start_end(self):
+        """
+        Selected a start_end area, click label button will call this function, popup a dialog to select a label
+        :return:
+        """
+
+        if len(self.start_end) != 2:
+            QMessageBox.about(self, "Info", "Please select a start end area!")
+            return
+        # Popup dialog for selection, cancel to quit
+        self.show_dialog(type_=1)
+        if self.label_dialog.closed:
+            return
+        label_name = self.label_dialog.label_name
+
+        start_sec = self.start_end[0]
+        end_sec = self.start_end[1]
+
+        # If the second point already exist in marker_labels, remove it
+        if (start_sec, end_sec, label_name) in self.start_end_labels:
+            pass
+        else:
+            # Add current second to marker_labels
+            self.start_end_labels.append([start_sec, end_sec, label_name])
+            self.start_end_labels = sorted(list(self.start_end_labels), key=lambda x: x[0])
+        self.is_saved = False
+
+        self.window_plot()
+
+    def sec_time_go(self):
+        """
+        Jump to time specified, trigger by time change of secTimeEditor
+        :return:
+        """
+
+        # Get second
+        self.position_sec = self.secTimeEdit.value()
+        # Redraw plot
+        self.timeSlider.setValue(self.position_sec)
+
+    def data_time_go(self):
+        """
+        Jump to time specified, trigger by time change of dateTimeEditor, data format is DD:HH:MM:SS
+        :return:
+        """
+
+        date_time = self.dateTimeEdit.dateTime().toPyDateTime()
+        # Change time to second format and jump
+        self.position_sec = int((date_time - datetime.datetime(2000, 1, 1, 0, 0, 0)).total_seconds())
+        self.timeSlider.setValue(self.position_sec)
+
+    def update_next_position(self):
+        """
+        Next window
+        :return:
+        """
+
+        if self.position_sec + self.x_window_size_sec >= self.total_seconds:
+            self.position_sec = self.total_seconds - self.x_window_size_sec
+        else:
+            self.position_sec = int(self.position_sec + self.x_window_size_sec)
+        self.timeSlider.setValue(self.position_sec)
+
+    def update_previous_position(self):
+        """
+        Previous window
+        :return:
+        """
+        if self.position_sec < self.x_window_size_sec:
+            self.position_sec = 0
+        else:
+            self.position_sec = int(self.position_sec - self.x_window_size_sec)
+        self.timeSlider.setValue(self.position_sec)
+
+    def add_channel(self):
+        """
+        Add and update channels to channel list container, update from self.channel_show
+        :return:
+        """
+
+        # Add list data to QStringListModel
+        slm = QStringListModel()
+        qList = self.channel_list
+        # Set up model
+        slm.setStringList(qList)
+        self.channelList.setModel(slm)
+
+    def show_channel(self):
+        """
+        Select channel and click 'Show' button, show selected channels in th signal area
+        :return:
+        """
+
+        selected_channel = [each.row() for each in self.channelList.selectedIndexes()]
+        if len(selected_channel) == 0:
+            return
+        self.channel_show = sorted(selected_channel)
+
+        self.channel_changed_show()
+
+    def delete_channel(self):
+        """
+        Delete the channel selected
+        :return:
+        """
+
+        box = QMessageBox.question(self, 'Warning', 'You are deleting data, please confirm!',
+                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+        if box == QMessageBox.Yes:
+            # Get selected channels
+            selected_channel = [each.row() for each in self.channelList.selectedIndexes()]
+            # If selected all channels, can't operate
+            if len(selected_channel) == len(self.channel_list):
+                # Alert
+                QMessageBox.about(self, "Error", "You can't delete all channels!")
+
+            # If selected channels is less than the number of all channels
+            else:
+                # selected_channel = sorted(selected_channel, reverse=True)
+                for each in sorted(selected_channel, reverse=True):
+                    if each in self.channel_show:
+                        self.channel_show.remove(each)
+                    self.channel_list.pop(each)
+                    self.data = np.delete(self.data, each, axis=0)
+
+                self.channel_show = list(range(len(self.channel_list)))
+                self.data_show = self.data
+
+                self.add_channel()
+                self.channel_changed_show()
+
+        else:
+            pass
+
+    def hide_channel(self):
+        """
+        Hide selected channel
+        :return:
+        """
+
+        # Get channel selected to hide
+        channels = [each.row() for each in self.channelList.selectedIndexes()]
+        # Deepcopy, or it will change the original data
+        channel_show_temp = list(copy.deepcopy(self.channel_show))
+        # Remove selected channel from channel_show
+        for each in channels:
+            if each in channel_show_temp:
+                channel_show_temp.remove(each)
+            else:
+                pass
+
+        # Can't hide all channels
+        if not channel_show_temp:
+            # Alert
+            QMessageBox.about(self, "Error", "You can't hide all channels!")
+            channel_show_temp = self.channel_show
+
+        self.channel_show = channel_show_temp
+
+        self.channel_changed_show()
+
+    def channel_changed_show(self):
+        """
+        If channel show changed, use this function to redraw plots
+        :return:
+        """
+
+        self.data_show = [self.data[each] for each in self.channel_show]
+        self.signal_figure.clf()
+        self.signal_ax = self.signal_figure.subplots(nrows=len(self.channel_show) + 1, ncols=1)
+        # if len(self.channel_show) == 1:
+        #     self.signal_ax = [self.signal_ax]
+        self.window_plot()
+
+    def hz_edit_ability(self):
+        """
+        Select low pass or high pass, and disable the other editor
+        :return:
+        """
+
+        if self.passSelecter.currentIndex() == 0:
+            # Lowpass
+            self.hzLowEdit.setDisabled(True)
+            self.hzHighEdit.setEnabled(True)
+        elif self.passSelecter.currentIndex() == 1:
+            # HighPass
+            self.hzHighEdit.setDisabled(True)
+            self.hzLowEdit.setEnabled(True)
+        else:
+            self.hzLowEdit.setEnabled(True)
+            self.hzHighEdit.setEnabled(True)
+
+    def filter(self):
+        """
+        Click filter button and call this function to filter, add a new channel for filtered data
+        :return:
+        """
+
+        # Operate only one channel at a time
+        selected_channel = [each.row() for each in self.channelList.selectedIndexes()]
+        low = self.hzLowEdit.value()
+        high = self.hzHighEdit.value()
+        name = ''
+        if len(selected_channel) != 1:
+            QMessageBox.about(self, "Error", "You can only(at least) select one channel to filter!")
+        else:
+
+            # Get data for filter
+            wait_data = self.data[selected_channel[0]]
+
+            # Lowpass
+            if self.passSelecter.currentIndex() == 0:
+                # filter
+                fnorm = np.array(low / (.5 * self.SR))
+                b, a = butter(3, fnorm, btype='lowpass')
+                name = 'LP'
+
+            # HighPass
+            elif self.passSelecter.currentIndex() == 1:
+                # filter
+                fnorm = np.array(high / (.5 * self.SR))
+                b, a = butter(3, fnorm, btype='highpass')
+                name = 'HP'
+            # BindPass
+            else:
+                if low >= high or low == 0:
+                    QMessageBox.about(self, "Error", "Please reset value for filter")
+                    return
+                fnorm = np.divide([low, high], .5 * self.SR)
+                b, a = butter(3, fnorm, btype='bandpass')
+                name = 'BP'
+
+            filtered_data = signal.filtfilt(b, a, wait_data)
+
+            # Add a channel for filtered data
+            self.channel_list.append(self.channel_list[selected_channel[0]] + ' ' + name)
+            self.channel_num += 1
+            self.y_lims.append(1)
+            self.channel_show.append(len(self.channel_list) - 1)
+
+            # Merge the filtered data into the entire data list
+            self.data = np.r_[self.data, np.array([filtered_data])]
+            self.add_channel()
+
+            self.channel_changed_show()
+
+    def set_default_TF_channel(self):
+        """
+        Click defaultTFBt and call this function, set the default time frequency channel
+        :return:
+        """
+
+        selected_channel = [each.row() for each in self.channelList.selectedIndexes()]
+        if len(selected_channel) != 1:
+            QMessageBox.about(self, "Error", "You can only(at least) select one channel for time frequency analysis!")
+        else:
+            self.default_TF_channel = selected_channel[0]
+            self.window_plot()
+
+    def REM_window(self):
+        """
+        Label current window as REM sleep stage, only call with shortcut CTRL+NUM1
+        :return:
+        """
+
+        self.label_all(sleep_type=1)
+
+    def NREM_window(self):
+        """
+        Label current window as NREM sleep stage, only call with shortcut CTRL+NUM2
+        :return:
+        """
+
+        self.label_all(sleep_type=2)
+
+    def Wake_window(self):
+        """
+        Label current window as wake sleep stage, only call with shortcut CTRL+NUM3
+        :return:
+        """
+
+        self.label_all(sleep_type=3)
+
+    def REM_start_end(self):
+        """
+        Label selected start end area as REM sleep stage, call by button remBt or shortcut NUM1
+        :return:
+        """
+
+        self.label_all(sleep_type=1, start_end=True)
+
+    def NREM_start_end(self):
+        """
+        Label selected start end area as NREM sleep stage, call by button nremBt or shortcut NUM2
+        :return:
+        """
+
+        self.label_all(sleep_type=2, start_end=True)
+
+    def Wake_start_end(self):
+        """
+        Label selected start end area as Wake sleep stage, call by button wakeBt or shortcut NUM3
+        :return:
+        """
+
+        self.label_all(sleep_type=3, start_end=True)
+
+    def label_all(self, sleep_type=3, start_end=False):
+        """
+        Label current window's sleep stage, call by REM_window, NREM_window, Wake_window
+        :param start_end: Check whether is start_end type label or current window label
+        :param sleep_type: sleep type to label
+        :return:
+        """
+
+        if start_end:
+            if len(self.start_end) != 2:
+                QMessageBox.about(self, "Info", "Please select a start end area!")
+                return
+            self.sleep_stage_labels[self.start_end[0]: self.start_end[1]] = \
+                [[each[0], sleep_type] for each in self.sleep_stage_labels[self.start_end[0]: self.start_end[1]]]
+        else:
+            self.position_sec = int(self.position_sec)
+            self.sleep_stage_labels[self.position_sec: self.position_sec + self.x_window_size_sec] = \
+                [[each[0], sleep_type] for each in
+                 self.sleep_stage_labels[self.position_sec: self.position_sec + self.x_window_size_sec]]
+
+        if self.autoScrollCheckBox.isChecked():
+            self.position_sec = int(self.position_sec + self.x_window_size_sec)
+            self.window_plot()
+
+        self.is_saved = False
+        self.update_sleep_stage()
+
+    def auto_save(self):
+        """
+        Auto save labels every 5 minutes if is_saved if False
+        :return:
+        """
+
+        if not self.is_saved:
+            self.save()
+
+    def save(self):
+        """
+        Save labels into labels file, call by Save button or CTRL+S shortcut
+        :return:
+        """
+
+        self.saveBt.setDisabled(True)
+        # Preprocess labels in three label lists, convert to the format in the label file
+        marker_labels = [
+            ', '.join([second2time(each[0]), str(each[0]), second2time(each[0]), str(each[0]), '1', each[1]])
+            for each in self.marker_labels]
+        start_end_labels = [', '.join([second2time(each[0]), str(each[0]), second2time(each[1]), str(each[1]),
+                                       '1', each[2]]) for each in self.start_end_labels]
+
+        # Sleep stage data is [[sec, label_type], ...], need to sort by label_type and construct a label list,
+        # and convert to the format [[start_sec, end_sec, label_type]]
+        sleep_stage_labels = lst2group(self.sleep_stage_labels)
+        sleep_stage_labels = [', '.join([second2time(each[0]), str(each[0]), second2time(each[1]), str(each[1]),
+                                         str(each[2]), self.stage_type_dict[each[2]]])
+                              for each in sleep_stage_labels]
+
+        labels = ["READ ONLY! DO NOT EDIT!\n3-Wake 2-NREM 1-REM",
+                  "Save time: " + datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "Acquisition time: " +
+                  self.acquisition_time.toPyDateTime().strftime("%Y-%m-%d %H:%M:%S"), "Sampling rate: " + str(self.SR),
+                  "==========Marker==========", '\n'.join(marker_labels),
+                  "==========Start-End==========", '\n'.join(start_end_labels),
+                  "==========Sleep stage==========", '\n'.join(sleep_stage_labels)]
+
+        with open(self.label_file, 'w') as f:
+            f.write('\n'.join(labels))
+        # f = open(self.label_file, 'r+')
+        # f.write('\n'.join(labels))
+        # f.close()
+        self.is_saved = True
+        self.saveBt.setEnabled(True)
+
+    def closeEvent(self, event):
+        """
+        Check if labels are saved when close the window
+        :param event:
+        :return:
+        """
+
+        if not self.is_saved:
+            box = QMessageBox.question(self, 'Warning',
+                                       'Your labels haven\'t been saved, discard?\n'
+                                       'Yes: Save and quit\nNo: Discard\nCancel: Back to sleep window',
+                                       QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.Yes)
+
+            if box == QMessageBox.Yes:
+                self.save()
+
+                event.accept()
+            elif box == QMessageBox.No:
+
+                event.accept()
+            else:
+                event.ignore()
+
+    def save_selected_data(self):
+        """
+        Save selected data to matlab file format
+        :return:
+        """
+
+        selected_channel = [each.row() for each in self.channelList.selectedIndexes()]
+        if len(selected_channel) == 0:
+            QMessageBox.about(self, "Error", "Please select at least 1 channel to save!")
+            return
+
+        save_data = [self.data[idx] for idx in selected_channel]
+
+        fd, type_ = QFileDialog.getSaveFileName(self, "Save data", "SelectedData", "*.mat;;*.MAT;;")
+        scipy.io.savemat(fd, mdict={'data': save_data})
+
+    def save_selected_data_stages(self):
+        """
+        Save selected data to different sleep stages
+        :return:
+        """
+
+        pass
+
+
+class label_dialog(QDialog, Ui_label):
+    def __init__(self, marker_label=None, start_end_label=None):
+        """
+        Pass in marker labels and start end labels to display for selection
+        :param marker_label: a list contains several marker labels
+        :param start_end_label: a list contains start end labels
+        """
+        super().__init__()
+        self.setupUi(self)
+
+        self.type_ = 0
+        self.OkBt.clicked.connect(self.submit_label)
+        self.cancelBt.clicked.connect(self.cancelEvent)
+
+        self.slm = QStringListModel()
+        self.marker_label = marker_label
+        self.start_end_label = start_end_label
+        self.label_name = ''
+        self.closed = False
+
+    def show_contents(self):
+        """
+        Add the labels into the label list area in the label dialog
+        :return:
+        """
+
+        self.closed = False
+        idx = self.slm.index(0)
+        if self.type_ == 0:
+            # Marker type
+
+            # Set model list, load data
+            self.slm.setStringList(self.marker_label)
+            self.listView.setModel(self.slm)
+            # Select the first item by default
+            self.listView.setCurrentIndex(idx)
+
+        else:
+            # start-end type
+            self.slm.setStringList(self.start_end_label)
+            self.listView.setModel(self.slm)
+            # Select the first one by default
+            self.listView.setCurrentIndex(idx)
+
+    def submit_label(self):
+        """
+        Click the 'OK' button, return the selected label's index
+        :param:
+        :return:
+        """
+
+        if self.type_ == 0:
+            self.label_name = self.marker_label[self.listView.selectedIndexes()[0].row()]
+        else:
+            self.label_name = self.start_end_label[self.listView.selectedIndexes()[0].row()]
+
+        # Hide the dialog window but not close it
+        self.hide()
+
+    def cancelEvent(self):
+        """
+        Click the 'Cancel' button will call this function
+        :return:
+        """
+
+        self.closed = True
+        self.hide()
+
+    def closeEvent(self, event):
+        """
+        Rewrite the close function of QDialog, aim to hide but not close the dialog
+        :param event: QDialog event
+        :return:
+        """
+        event.ignore()
+        self.closed = True
+        self.hide()
+
+
+class spectrum_dialog(QDialog, Ui_spectrum):
+
+    def __init__(self):
+        """
+        Pass in the x data and y data to plot the spectrum
+        """
+
+        super().__init__()
+        self.setupUi(self)
+
+        self.x = []
+        self.y = []
+
+        self.spectrum_figure = plt.figure(figsize=(10, 2))
+        self.spectrum_ax = self.spectrum_figure.subplots(nrows=1, ncols=1)
+        self.spectrum_canvas = FigureCanvas(self.spectrum_figure)
+        self.spectrumArea.setWidget(self.spectrum_canvas)
+        self.saveBt.clicked.connect(self.save)
+
+    def draw(self):
+        """
+        Plot the spectrum and put it in the dialog area
+        :return:
+        """
+
+        self.spectrum_ax.clear()
+        major_ticks_top = np.linspace(0, 40, 21)
+        minor_ticks_top = np.linspace(0, 40, 41)
+
+        self.spectrum_ax.xaxis.set_ticks(major_ticks_top)
+        self.spectrum_ax.xaxis.set_ticks(minor_ticks_top, minor=True)
+        self.spectrum_ax.grid(which="major", alpha=0.6)
+        self.spectrum_ax.grid(which="minor", alpha=0.3)
+
+        self.spectrum_ax.set_xlim(0, 40)
+        self.spectrum_ax.plot(self.x, self.y)
+        self.spectrum_ax.set_xlabel("Frequency (Hz)")
+        self.spectrum_ax.set_ylabel("Power spectral density (Power/Hz)")
+
+        self.spectrum_figure.canvas.draw()
+        self.spectrum_figure.canvas.flush_events()
+
+    def save(self):
+        """
+        save figure to local path, popup a dialog for path selecting
+        :return:
+        """
+
+        fd, type_ = QFileDialog.getSaveFileName(self, "Save figure", "Spectrum", "*.png;;*.jpg;;")
+        self.spectrum_figure.savefig(fd, dpi=300)
+
+    def closeEvent(self, event):
+        """
+        Rewrite close function of dialog
+        :param event:
+        :return:
+        """
+        event.ignore()
+        self.hide()
