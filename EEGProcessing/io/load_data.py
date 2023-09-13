@@ -11,7 +11,7 @@ import datetime
 import sys
 from math import ceil
 
-from PyQt5.QtWidgets import QMainWindow, QApplication, QFileDialog, QMessageBox, QDialog
+from PyQt5.QtWidgets import QMainWindow, QApplication, QFileDialog, QMessageBox
 from hdf5storage import loadmat
 
 from EEGProcessing.gui.load_data.load_data import Ui_Load_data
@@ -122,8 +122,10 @@ class load_gui(QMainWindow, Ui_Load_data):
             self.label_file = [each.replace("\n", "") for each in f.readlines()]
 
             if len(self.label_file) == 0:
+                channel_list = [str(each) for each in range(1, self.channel_num + 1)]
                 # Initialize the labels
                 self.label_file.append("READ ONLY! DO NOT EDIT!\n3-Wake 2-NREM 1-REM")
+                self.label_file.append("\nChannel name(s): " + ', '.join(channel_list))
                 self.label_file.append("\nSave time: " + datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
                 self.label_file.append("\nAcquisition time: " +
                                        self.acquisition_time.toPyDateTime().strftime("%Y-%m-%d %H:%M:%S"))
@@ -135,13 +137,17 @@ class load_gui(QMainWindow, Ui_Load_data):
                 label_end_time = self.total_seconds - 1
 
                 # Three types label format 2023-09-11
-                # Marker labels: [[timestamp, time_sec, timestamp, time_sec, label_type, label_name], ..]
-                # Start end labels: [[start_timestamp, start_sec, end_timestamp, end_sec, label_type, label_name], ..]
-                # Sleep stage labels: [[start_timestamp, start_sec, end_timestamp, end_sec, label_type, label_name], ..]
+                # Marker labels:
+                # [[timestamp, time_sec, 1, timestamp, time_sec, 0, label_type, label_name], ..]
+                # Start end labels:
+                # [[start_timestamp, start_sec, 1, end_timestamp, end_sec, 0, label_type, label_name], ..]
+                # Sleep stage labels:
+                # [[start_timestamp, start_sec, 1, end_timestamp, end_sec, 0, label_type, label_name], ..]
+                # The '1' and '0' above are stand for 'start' and 'end' respectively
 
                 sleep_stage = [(label_start_time, label_end_time, '3', 'Wake')]
-                sleep_stage_format = "\n".join([", ".join([second2time(second=each[0]), str(each[0]),
-                                                           second2time(second=each[1]), str(each[1]), each[2],
+                sleep_stage_format = "\n".join([", ".join([second2time(second=each[0]), str(each[0]), '1',
+                                                           second2time(second=each[1]), str(each[1]), '0', each[2],
                                                            each[3]]) for each in sleep_stage])
                 self.label_file += sleep_stage_format
 
@@ -158,7 +164,7 @@ class load_gui(QMainWindow, Ui_Load_data):
                 SR_ = int(self.label_file[self.label_file.index("==========Marker==========") - 1].split(": ")[1])
                 label_start_time = self.label_file[
                     self.label_file.index("==========Sleep stage==========") + 1].split(", ")[1]
-                label_end_time = self.label_file[-1].split(", ")[3]
+                label_end_time = self.label_file[-1].split(", ")[4]
                 if SR_ != self.SR:
                     QMessageBox.about(self, "Error",
                                       "Sampling rate " + self.SR +
@@ -170,6 +176,12 @@ class load_gui(QMainWindow, Ui_Load_data):
                     self.labelPathEdit.clear()
                     return
 
+                channel_list = self.label_file[2].split(": ")[1].split(", ")
+                if len(channel_list) < self.channel_num:
+                    # Channel may be deleted by user
+                    channel_list += [str(each) for each in range(len(channel_list) + 1, self.channel_num + 1)]
+                acquisition_time = datetime.datetime.strptime(self.label_file[4].split(": ")[1], "%Y-%m-%d %H:%M:%S")
+                self.dateTimeEdit.setDateTime(acquisition_time)
             f = open(self.label_path, 'r+')
             self.label_file = [each.replace("\n", "") for each in f.readlines()]
             # If not empty or error, load the three types of labels
@@ -189,7 +201,8 @@ class load_gui(QMainWindow, Ui_Load_data):
         # self.detail.exec_()
 
         win_plot.__init__(data=self.data, labels=self.labels, label_file=self.label_path,
-                          SR=self.SR, epoch_length=self.epoch_length, acquisition_time=self.acquisition_time)
+                          SR=self.SR, epoch_length=self.epoch_length, acquisition_time=self.acquisition_time,
+                          channel_list=channel_list)
 
         del self.data
         print("Check finish!")

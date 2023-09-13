@@ -9,6 +9,7 @@
 """
 
 import datetime
+from itertools import groupby
 
 
 def second2time(second):
@@ -35,11 +36,8 @@ def str_time2second(str_time):
     :return:
     """
 
-    return int((datetime.datetime.strptime(str_time, "%d:%H:%M:%S") -
+    return int((datetime.datetime.strptime(str_time, "y%/m%/%d %H:%M:%S") -
                 datetime.datetime(1900, 1, 1, 0, 0, 0)).total_seconds())
-
-
-from itertools import groupby
 
 
 def lst2group(pre_lst):
@@ -55,5 +53,3 @@ def lst2group(pre_lst):
 
     # Convert to [[1, 5, 2], [6, 8, 1], [9, 10, 3]]
     return [[each[0][0], each[-1][0], each[0][1]] for each in pre_lst]
-
-

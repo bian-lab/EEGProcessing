@@ -33,7 +33,7 @@ class sleep(QMainWindow, Ui_sleep):
     """
 
     def __init__(self, parent=None, data=None, labels=None, label_file=None,
-                 SR=256, epoch_length=5, acquisition_time=None):
+                 SR=256, epoch_length=5, acquisition_time=None, channel_list=None):
         """
         :param parent:
         :param data: All channel data, depends on the numbers of its column
@@ -50,6 +50,8 @@ class sleep(QMainWindow, Ui_sleep):
         :param SR: Sampling rate
         :param epoch_length:
         :param acquisition_time:
+        :param channel_list: The name of each channel, from 1 to channel_num by default, but if user edited,
+                             it will be saved into the label file and read out
         """
 
         # The first time load this class, there is no data pass in, check it and pass if the data is None
@@ -67,18 +69,18 @@ class sleep(QMainWindow, Ui_sleep):
         # Change the sleep_stage_labels to sec-label format, saving the time for labeling
         # After converting, the labels' format is:
         # marker_labels:
-        # [[timestamp, time_sec, timestamp, time_sec, label_type, label_name], ..]
+        # [[timestamp, time_sec, 1, timestamp, time_sec, 0, label_type, label_name], ..]
         # --> [[time_sec, label_name], ...]
         # start_end_labels:
-        # [[start_timestamp, start_sec, end_timestamp, end_sec, label_type, label_name],..]
+        # [[start_timestamp, start_sec, 1, end_timestamp, end_sec, 0, label_type, label_name],..]
         # --> [[start_sec, end_sec, label_name], ...]
         # sleep_stage_labels:
-        # [[start_timestamp, start_sec, end_timestamp, end_sec, label_type, label_name], ..]
+        # [[start_timestamp, start_sec, 1, end_timestamp, end_sec, 0, label_type, label_name], ..]
         # --> [[start_sec, end_sec, label_type]]
-        self.marker_labels = [[int(each.split(', ')[1]), each.split(', ')[5]] for each in labels[0]]
-        self.start_end_labels = [[int(each.split(', ')[1]), int(each.split(', ')[3]), each.split(', ')[5]]
+        self.marker_labels = [[int(each.split(', ')[1]), each.split(', ')[7]] for each in labels[0]]
+        self.start_end_labels = [[int(each.split(', ')[1]), int(each.split(', ')[4]), each.split(', ')[7]]
                                  for each in labels[1]]
-        temp_sleep_stage_labels = [[int(each.split(', ')[1]), int(each.split(', ')[3]), int(each.split(', ')[4])]
+        temp_sleep_stage_labels = [[int(each.split(', ')[1]), int(each.split(', ')[4]), int(each.split(', ')[6])]
                                    for each in labels[2]]
         self.sleep_stage_labels = []
         for each in temp_sleep_stage_labels:
@@ -103,7 +105,7 @@ class sleep(QMainWindow, Ui_sleep):
         # Initialize other attributes
         self.is_saved = True  # Check whether the labels are saved into the label_file
         self.channel_num = self.data.shape[0]
-        self.channel_list = [str(each) for each in range(1, self.channel_num + 1)]  # Name of each channel in a list
+        self.channel_list = channel_list  # Name of each channel in a list
         # Channels index to be show in the signal area, can select by user
         self.channel_show = list(range(self.channel_num))
         self.data_show = self.data  # Which channel data to show, connect to self.channel_show
@@ -124,7 +126,7 @@ class sleep(QMainWindow, Ui_sleep):
         self.signal_ax = self.signal_figure.subplots(nrows=self.channel_num + 1, ncols=1)
         self.signal_figure.set_tight_layout(True)
         self.signal_figure.tight_layout(pad=0, w_pad=0, h_pad=0)
-        self.signal_figure.subplots_adjust(hspace=0, left=0.02, right=0.97, top=0.97)  # Adjust subplots
+        self.signal_figure.subplots_adjust(hspace=0, left=0.02, right=0.97, top=0.97, bottom=0.07)  # Adjust subplots
         # Put the figure to a canvas
         self.signal_canvas = FigureCanvas(self.signal_figure)
         # Add button click release event for signal canvas
@@ -169,6 +171,9 @@ class sleep(QMainWindow, Ui_sleep):
         self.save_timer = QTimer(self)
         self.save_timer.timeout.connect(self.auto_save)
 
+        # Set slm for channel list
+        self.channel_slm = QStringListModel()
+
     def my_sleep(self):
         """
         Mainly for setup widgets
@@ -179,7 +184,7 @@ class sleep(QMainWindow, Ui_sleep):
         self.timeSlider.setRange(0, self.total_seconds)
         # Time slider click and scroll event
         self.timeSlider.valueChanged.connect(self.slider_change)
-        self.timeSlider.setSingleStep(1)
+        self.timeSlider.setSingleStep(5)
 
         # Two time editor area, seconds and time stamp
         self.secTimeEdit.setMaximum(self.total_seconds - 1)
@@ -241,6 +246,12 @@ class sleep(QMainWindow, Ui_sleep):
 
         # Save selected channels' data
         self.saveDataBt.clicked.connect(self.save_selected_data)
+
+        # Listen to label dialog list changes, if data changed, call update_label_list function to update
+        self.label_dialog.slm.dataChanged.connect(self.update_label_list)
+
+        # If channel list name is edited, update the channel list
+        self.channel_slm.dataChanged.connect(self.update_channel_names)
 
     def window_plot(self, reset_y_lims=True):
         """
@@ -336,18 +347,18 @@ class sleep(QMainWindow, Ui_sleep):
             self.signal_ax[1].annotate(each[1], xy=(each[0] * self.SR, self.y_lims[self.channel_show[0]] -
                                                     self.y_lims[self.channel_show[0]] * 0.2), color='dodgerblue')
         if self.start_end and self.start_end[0] * self.SR in x:
-            self.signal_ax[1].annotate('start', xy=(self.start_end[0] * self.SR, self.y_lims[self.channel_show[0]] -
-                                                    self.y_lims[self.channel_show[0]] * 0.2), color='lime')
+            self.signal_ax[-1].annotate('S', xy=(self.start_end[0] * self.SR, -self.y_lims[self.channel_show[-1]]),
+                                        color='lime')
         if len(self.start_end) == 2 and self.start_end[1] * self.SR in x:
-            self.signal_ax[1].annotate('end', xy=(self.start_end[1] * self.SR, self.y_lims[self.channel_show[0]] -
-                                                  self.y_lims[self.channel_show[0]] * 0.2), color='lime')
+            self.signal_ax[-1].annotate('E', xy=(self.start_end[1] * self.SR - self.x_window_size * 0.008,
+                                                 -self.y_lims[self.channel_show[-1]]), color='lime')
 
         # Set xtick for the last figure, because all the figures share the same x-axis
         self.signal_ax[-1].set_xticks(
             [each * self.SR for each in
              range(self.position_sec, self.position_sec + self.x_window_size_sec + 1, self.epoch_length)],
             [each for each in
-             range(self.position_sec, self.position_sec + self.x_window_size_sec + 1, self.epoch_length)], rotation=90
+             range(self.position_sec, self.position_sec + self.x_window_size_sec + 1, self.epoch_length)], rotation=45
         )
         self.signal_figure.canvas.draw()  # Redraw canvas
         self.signal_figure.canvas.flush_events()  # Flush canvas
@@ -393,7 +404,7 @@ class sleep(QMainWindow, Ui_sleep):
         """
 
         self.position_sec = self.timeSlider.value()
-        self.window_plot()
+        self.window_plot(reset_y_lims=False)
 
     def check_epoch_custom(self):
         """
@@ -489,7 +500,7 @@ class sleep(QMainWindow, Ui_sleep):
                 self.start_end.append(sec)
 
         self.update_sleep_stage()
-        self.window_plot()
+        self.window_plot(reset_y_lims=False)
 
     def show_dialog(self, type_=0):
         """
@@ -590,7 +601,7 @@ class sleep(QMainWindow, Ui_sleep):
             self.start_end_labels = sorted(list(self.start_end_labels), key=lambda x: x[0])
         self.is_saved = False
 
-        self.window_plot()
+        self.window_plot(reset_y_lims=False)
 
     def sec_time_go(self):
         """
@@ -643,12 +654,10 @@ class sleep(QMainWindow, Ui_sleep):
         :return:
         """
 
-        # Add list data to QStringListModel
-        slm = QStringListModel()
         qList = self.channel_list
         # Set up model
-        slm.setStringList(qList)
-        self.channelList.setModel(slm)
+        self.channel_slm.setStringList(qList)
+        self.channelList.setModel(self.channel_slm)
 
     def show_channel(self):
         """
@@ -821,7 +830,7 @@ class sleep(QMainWindow, Ui_sleep):
             QMessageBox.about(self, "Error", "You can only(at least) select one channel for time frequency analysis!")
         else:
             self.default_TF_channel = selected_channel[0]
-            self.window_plot()
+            self.window_plot(reset_y_lims=False)
 
     def REM_window(self):
         """
@@ -892,8 +901,11 @@ class sleep(QMainWindow, Ui_sleep):
                  self.sleep_stage_labels[self.position_sec: self.position_sec + self.x_window_size_sec]]
 
         if self.autoScrollCheckBox.isChecked():
-            self.position_sec = int(self.position_sec + self.x_window_size_sec)
-            self.window_plot()
+            if start_end:
+                self.position_sec = self.start_end[1]
+            else:
+                self.position_sec = int(self.position_sec + self.x_window_size_sec)
+            self.window_plot(reset_y_lims=False)
 
         self.is_saved = False
         self.update_sleep_stage()
@@ -916,19 +928,20 @@ class sleep(QMainWindow, Ui_sleep):
         self.saveBt.setDisabled(True)
         # Preprocess labels in three label lists, convert to the format in the label file
         marker_labels = [
-            ', '.join([second2time(each[0]), str(each[0]), second2time(each[0]), str(each[0]), '1', each[1]])
+            ', '.join([second2time(each[0]), str(each[0]), '1', second2time(each[0]), str(each[0]), '0', '1', each[1]])
             for each in self.marker_labels]
-        start_end_labels = [', '.join([second2time(each[0]), str(each[0]), second2time(each[1]), str(each[1]),
+        start_end_labels = [', '.join([second2time(each[0]), str(each[0]), '1', second2time(each[1]), str(each[1]), '0',
                                        '1', each[2]]) for each in self.start_end_labels]
 
         # Sleep stage data is [[sec, label_type], ...], need to sort by label_type and construct a label list,
         # and convert to the format [[start_sec, end_sec, label_type]]
         sleep_stage_labels = lst2group(self.sleep_stage_labels)
-        sleep_stage_labels = [', '.join([second2time(each[0]), str(each[0]), second2time(each[1]), str(each[1]),
-                                         str(each[2]), self.stage_type_dict[each[2]]])
+        sleep_stage_labels = [', '.join([second2time(each[0]), str(each[0]), '1', second2time(each[1]), str(each[1]),
+                                         '0', str(each[2]), self.stage_type_dict[each[2]]])
                               for each in sleep_stage_labels]
 
         labels = ["READ ONLY! DO NOT EDIT!\n3-Wake 2-NREM 1-REM",
+                  "Channel name(s): " + ', '.join([each for each in self.channel_list]),
                   "Save time: " + datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "Acquisition time: " +
                   self.acquisition_time.toPyDateTime().strftime("%Y-%m-%d %H:%M:%S"), "Sampling rate: " + str(self.SR),
                   "==========Marker==========", '\n'.join(marker_labels),
@@ -980,6 +993,8 @@ class sleep(QMainWindow, Ui_sleep):
         save_data = [self.data[idx] for idx in selected_channel]
 
         fd, type_ = QFileDialog.getSaveFileName(self, "Save data", "SelectedData", "*.mat;;*.MAT;;")
+        if fd == '':
+            return
         scipy.io.savemat(fd, mdict={'data': save_data})
 
     def save_selected_data_stages(self):
@@ -989,6 +1004,35 @@ class sleep(QMainWindow, Ui_sleep):
         """
 
         pass
+
+    def update_label_list(self):
+        """
+        Update labels if label dialog changed the StringListModel
+        :return:
+        """
+
+        # Get the changed StringList
+        string_list = self.label_dialog.slm.stringList()
+
+        # If it is marker labels, then update the marker list
+        if self.markerRadio.isChecked():
+            self.marker_label_list = string_list
+            self.label_dialog.marker_label = string_list
+        elif self.startEndRadio.isChecked():
+            self.start_end_label_list = string_list
+            self.label_dialog.start_end_label = string_list
+
+    def update_channel_names(self):
+        """
+        If user edit the channel's name, update it in the list, and save in to the label file
+        :return:
+        """
+
+        # Get the changed StringList
+        string_list = self.channel_slm.stringList()
+        self.channel_list = string_list
+        self.is_saved = False
+        self.window_plot(reset_y_lims=False)
 
 
 class label_dialog(QDialog, Ui_label):
@@ -1096,15 +1140,15 @@ class spectrum_dialog(QDialog, Ui_spectrum):
         """
 
         self.spectrum_ax.clear()
-        major_ticks_top = np.linspace(0, 40, 21)
-        minor_ticks_top = np.linspace(0, 40, 41)
+        major_ticks_top = np.linspace(0, 50, 26)
+        minor_ticks_top = np.linspace(0, 50, 51)
 
         self.spectrum_ax.xaxis.set_ticks(major_ticks_top)
         self.spectrum_ax.xaxis.set_ticks(minor_ticks_top, minor=True)
         self.spectrum_ax.grid(which="major", alpha=0.6)
         self.spectrum_ax.grid(which="minor", alpha=0.3)
 
-        self.spectrum_ax.set_xlim(0, 40)
+        self.spectrum_ax.set_xlim(0, 50)
         self.spectrum_ax.plot(self.x, self.y)
         self.spectrum_ax.set_xlabel("Frequency (Hz)")
         self.spectrum_ax.set_ylabel("Power spectral density (Power/Hz)")
@@ -1119,7 +1163,12 @@ class spectrum_dialog(QDialog, Ui_spectrum):
         """
 
         fd, type_ = QFileDialog.getSaveFileName(self, "Save figure", "Spectrum", "*.png;;*.jpg;;")
+        if fd == '':
+            return
         self.spectrum_figure.savefig(fd, dpi=300)
+        fd = fd + '.csv'
+        data_arr = np.array([self.x, self.y]).transpose()
+        np.savetxt(fd, X=data_arr, delimiter=',')
 
     def closeEvent(self, event):
         """

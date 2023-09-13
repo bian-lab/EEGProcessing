@@ -37,7 +37,8 @@ class Ui_label(object):
         font.setFamily("Microsoft YaHei UI")
         font.setPointSize(10)
         self.listView.setFont(font)
-        self.listView.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.listView.setEditTriggers(QtWidgets.QAbstractItemView.SelectedClicked)
+        self.listView.setTabKeyNavigation(True)
         self.listView.setObjectName("listView")
         self.gridLayout.addWidget(self.listView, 0, 0, 1, 2)
 
