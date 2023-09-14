@@ -13,6 +13,7 @@ from math import ceil
 
 import numpy as np
 import scipy
+from PyQt5 import QtCore
 from PyQt5.QtCore import QStringListModel, Qt, QTimer
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import QMainWindow, QDialog, QFileDialog, QMessageBox, QShortcut
@@ -291,15 +292,20 @@ class sleep(QMainWindow, Ui_sleep):
         # F: from 0 to 152.5 (Half of sampling rate), contains 129 data points
         # T: time resolution, depends on window size
         # Sxx: power density, shape of (F.shape, T.shape)
-        F, T, Sxx = signal.spectrogram(
-            self.data[self.default_TF_channel][position: position + self.x_window_size], fs=self.SR, noverlap=0,
-            nperseg=self.SR)
+
+        # Filter the data to reduce data point
+        fnorm = np.array(30 / (.5 * self.SR))
+        b, a = butter(3, fnorm, btype='lowpass')
+
+        filtered_data = signal.filtfilt(b, a,
+                                        self.data[self.default_TF_channel][position: position + self.x_window_size])
+        F, T, Sxx = signal.spectrogram(filtered_data, fs=self.SR, noverlap=0, nperseg=self.SR)
         # Sxx = numpy.log(Sxx)
         cmap = plt.cm.get_cmap('jet')
-        # cmap = plt.cm.S
-        self.signal_ax[0].pcolormesh(T, F, Sxx, cmap=cmap, vmax=np.percentile(Sxx, self.spectrum_percentile))
 
         self.signal_ax[0].set_ylim(0, 30)
+        # cmap = plt.cm.S
+        self.signal_ax[0].pcolormesh(T, F, Sxx, cmap=cmap, vmax=np.percentile(Sxx, self.spectrum_percentile))
         self.signal_ax[0].set_xticks([])
 
         if redraw_spectrum:
@@ -354,7 +360,7 @@ class sleep(QMainWindow, Ui_sleep):
             self.signal_ax[i].set_ylabel(self.channel_list[self.channel_show[i - 1]])
 
             # Add axvline of each epoch
-            if len(x) < self.SR * 450:
+            if len(x) < self.SR * 300:
                 for axvline_positions in range(
                         self.position_sec, self.position_sec + self.x_window_size_sec, self.epoch_length):
                     self.signal_ax[i].axvline(axvline_positions * self.SR, color='green', alpha=0.1)
@@ -561,22 +567,16 @@ class sleep(QMainWindow, Ui_sleep):
             QMessageBox.about(self, "Info", "Please select a start end area!")
             return
 
-        # Initialize a spectrum dialog
-        self.spectrum_dialog.setWindowTitle('Spectrum: ' + str(self.start_end[0]) + '~' + str(self.start_end[1]))
+        #  Construct data
         data = self.data[selected_channel[0]][
                int(self.start_end[0] * self.SR): int(self.start_end[1] * self.SR)]
 
-        # filter the data to under 50 hz
-        fnorm = np.array(50 / (.5 * self.SR))
-        b, a = butter(3, fnorm, btype='lowpass')
-
-        filtered_data = signal.filtfilt(b, a, data)
-        f, Pxx_den = welch(filtered_data, self.SR, nperseg=self.epoch_length * self.SR)
-        # plt.plot(f, Pxx_den)
-        # plt.show()
-
-        self.spectrum_dialog.x = f
-        self.spectrum_dialog.y = Pxx_den
+        # Call spectrum dialog
+        self.spectrum_dialog.data = data
+        self.spectrum_dialog.start_end = self.start_end
+        self.spectrum_dialog.SR = self.SR
+        self.spectrum_dialog.epoch_length = self.epoch_length
+        self.spectrum_dialog.spectrum_percentile = self.spectrum_percentile
         self.spectrum_dialog.draw()
         self.spectrum_dialog.activateWindow()
         self.spectrum_dialog.setWindowState(self.spectrum_dialog.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
@@ -1182,14 +1182,27 @@ class spectrum_dialog(QDialog, Ui_spectrum):
         super().__init__()
         self.setupUi(self)
 
-        self.x = []
-        self.y = []
+        self.data = None
+        self.start_end = []
+        self.SR = 256
+        self.epoch_length = 5
+        self.spectrum_percentile = 99.7
 
         self.spectrum_figure = plt.figure(figsize=(10, 2))
-        self.spectrum_ax = self.spectrum_figure.subplots(nrows=1, ncols=1)
+        self.spectrum_ax = self.spectrum_figure.subplots(nrows=2, ncols=1)
         self.spectrum_canvas = FigureCanvas(self.spectrum_figure)
         self.spectrumArea.setWidget(self.spectrum_canvas)
         self.saveBt.clicked.connect(self.save)
+
+        # value
+        self.spectrum_F = None
+        self.spectrum_P = None
+        self.time_frequency_T = None
+        self.time_frequency_F = None
+        self.time_frequency_P = None
+
+        # Add maximum and minimum for spectrum dialog
+        self.setWindowFlag(QtCore.Qt.WindowMaximizeButtonHint)
 
     def draw(self):
         """
@@ -1197,22 +1210,57 @@ class spectrum_dialog(QDialog, Ui_spectrum):
         :return:
         """
 
-        self.spectrum_ax.clear()
+        self.refresh_canvas()
+        self.setWindowTitle('Spectrum: ' + str(self.start_end[0]) + '~' + str(self.start_end[1]))
+
+        # Get Spectrum
+        fnorm = np.array(50 / (.5 * self.SR))
+        b, a = butter(3, fnorm, btype='lowpass')
+
+        filtered_data = signal.filtfilt(b, a, self.data)
+        self.spectrum_F, self.spectrum_P = welch(filtered_data, self.SR, nperseg=self.epoch_length * self.SR)
+
+        # Get time frequency
+        self.time_frequency_F, self.time_frequency_T, self.time_frequency_P = \
+            signal.spectrogram(self.data, fs=self.SR, noverlap=0, nperseg=self.SR)
+        cmap = plt.cm.get_cmap('jet')
+
+        # plot time frequency
+        pcm = self.spectrum_ax[0].pcolormesh(self.time_frequency_T, self.time_frequency_F, self.time_frequency_P,
+                                             cmap=cmap, vmax=np.percentile(self.time_frequency_P,
+                                                                           self.spectrum_percentile))
+        self.spectrum_figure.colorbar(pcm, ax=self.spectrum_ax[0])
+        self.spectrum_ax[0].set_ylim(0, 30)
+        self.spectrum_ax[0].set_xticks([])
+
+        # plot spectrum
+        # self.spectrum_ax[1].clear()
         major_ticks_top = np.linspace(0, 50, 26)
         minor_ticks_top = np.linspace(0, 50, 51)
 
-        self.spectrum_ax.xaxis.set_ticks(major_ticks_top)
-        self.spectrum_ax.xaxis.set_ticks(minor_ticks_top, minor=True)
-        self.spectrum_ax.grid(which="major", alpha=0.6)
-        self.spectrum_ax.grid(which="minor", alpha=0.3)
+        self.spectrum_ax[1].xaxis.set_ticks(major_ticks_top)
+        self.spectrum_ax[1].xaxis.set_ticks(minor_ticks_top, minor=True)
+        self.spectrum_ax[1].grid(which="major", alpha=0.6)
+        self.spectrum_ax[1].grid(which="minor", alpha=0.3)
 
-        self.spectrum_ax.set_xlim(0, 50)
-        self.spectrum_ax.plot(self.x, self.y)
-        self.spectrum_ax.set_xlabel("Frequency (Hz)")
-        self.spectrum_ax.set_ylabel("Power spectral density (Power/Hz)")
+        self.spectrum_ax[1].set_xlim(0, 50)
+        self.spectrum_ax[1].plot(self.spectrum_F, self.spectrum_P)
+        self.spectrum_ax[1].set_xlabel("Frequency (Hz)")
+        self.spectrum_ax[1].set_ylabel("Power spectral density (Power/Hz)")
 
         self.spectrum_figure.canvas.draw()
         self.spectrum_figure.canvas.flush_events()
+
+    def refresh_canvas(self):
+        """
+        Color bar cannot be delete, refresh the canvas every time
+        :return:
+        """
+
+        self.spectrum_figure = plt.figure(figsize=(10, 2))
+        self.spectrum_ax = self.spectrum_figure.subplots(nrows=2, ncols=1)
+        self.spectrum_canvas = FigureCanvas(self.spectrum_figure)
+        self.spectrumArea.setWidget(self.spectrum_canvas)
 
     def save(self):
         """
@@ -1220,12 +1268,20 @@ class spectrum_dialog(QDialog, Ui_spectrum):
         :return:
         """
 
-        fd, type_ = QFileDialog.getSaveFileName(self, "Save figure", "Spectrum", "*.png;;*.jpg;;")
+        # save spectrum
+        fd, type_ = QFileDialog.getSaveFileName(self, "Save figure and data", 'figure_' + str(self.start_end[0]) + '_'
+                                                + str(self.start_end[1]), "*.png;;*.jpg;;")
         if fd == '':
             return
-        self.spectrum_figure.savefig(fd, dpi=300)
-        fd = fd + '.csv'
-        data_arr = np.array([self.x, self.y]).transpose()
+
+        self.spectrum_figure.savefig(fd, dpi=350)
+        # extent = self.spectrum_ax[0].get_window_extent()
+        # self.spectrum_figure.savefig(fd, bbox_inches=extent)
+        # .savefig(fd, dpi=350)
+        data_path = fd[:-4]
+        fd = data_path + '_data.csv'
+
+        data_arr = np.array([self.spectrum_F, self.spectrum_P]).transpose()
         np.savetxt(fd, X=data_arr, delimiter=',')
 
     def closeEvent(self, event):

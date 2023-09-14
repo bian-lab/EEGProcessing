@@ -14,14 +14,15 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 class Ui_spectrum(object):
     def setupUi(self, spectrum):
         spectrum.setObjectName("spectrum")
-        spectrum.resize(713, 462)
+        spectrum.resize(1092, 700)
+        spectrum.setMinimumSize(QtCore.QSize(1000, 700))
         self.verticalLayout = QtWidgets.QVBoxLayout(spectrum)
         self.verticalLayout.setObjectName("verticalLayout")
         self.spectrumArea = QtWidgets.QScrollArea(spectrum)
         self.spectrumArea.setWidgetResizable(True)
         self.spectrumArea.setObjectName("spectrumArea")
         self.scrollAreaWidgetContents = QtWidgets.QWidget()
-        self.scrollAreaWidgetContents.setGeometry(QtCore.QRect(0, 0, 693, 411))
+        self.scrollAreaWidgetContents.setGeometry(QtCore.QRect(0, 0, 1072, 649))
         self.scrollAreaWidgetContents.setObjectName("scrollAreaWidgetContents")
         self.spectrumArea.setWidget(self.scrollAreaWidgetContents)
         self.verticalLayout.addWidget(self.spectrumArea)
