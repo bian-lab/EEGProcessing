@@ -24,7 +24,7 @@ from scipy.signal import butter, welch
 from EEGProcessing.gui.plot.labels import Ui_label
 from EEGProcessing.gui.plot.sleep import Ui_sleep
 from EEGProcessing.gui.plot.spectrum import Ui_spectrum
-from EEGProcessing.utils.utils import second2time, lst2group
+from EEGProcessing.utils.utils import second2time, lst2group, down_sample
 
 
 class sleep(QMainWindow, Ui_sleep):
@@ -33,7 +33,7 @@ class sleep(QMainWindow, Ui_sleep):
     """
 
     def __init__(self, parent=None, data=None, labels=None, label_file=None,
-                 SR=256, epoch_length=5, acquisition_time=None, channel_list=None):
+                 SR=256, epoch_length=5, acquisition_time=None):
         """
         :param parent:
         :param data: All channel data, depends on the numbers of its column
@@ -50,8 +50,6 @@ class sleep(QMainWindow, Ui_sleep):
         :param SR: Sampling rate
         :param epoch_length:
         :param acquisition_time:
-        :param channel_list: The name of each channel, from 1 to channel_num by default, but if user edited,
-                             it will be saved into the label file and read out
         """
 
         # The first time load this class, there is no data pass in, check it and pass if the data is None
@@ -105,7 +103,7 @@ class sleep(QMainWindow, Ui_sleep):
         # Initialize other attributes
         self.is_saved = True  # Check whether the labels are saved into the label_file
         self.channel_num = self.data.shape[0]
-        self.channel_list = channel_list  # Name of each channel in a list
+        self.channel_list = [str(each + 1) for each in range(self.channel_num)]  # Name of each channel in a list
         # Channels index to be show in the signal area, can select by user
         self.channel_show = list(range(self.channel_num))
         self.data_show = self.data  # Which channel data to show, connect to self.channel_show
@@ -150,8 +148,8 @@ class sleep(QMainWindow, Ui_sleep):
         self.start_end = []
         self.start_end_vline = None
         # Initialize labels to display in the label dialog for selecting
-        self.marker_label_list = ['label1', 'label2', 'label3', 'label4']
-        self.start_end_label_list = ['Slow Wave', 'Spindle', 'start-end label1', 'start-end label2']
+        self.marker_label_list = ['label' + str(each) for each in range(1, 21)]
+        self.start_end_label_list = ['Slow Wave', 'Spindle'] + ['start-end label' + str(each) for each in range(1, 19)]
         # Initialize label dialog
         self.label_dialog = label_dialog(marker_label=self.marker_label_list, start_end_label=self.start_end_label_list)
         self.spectrum_dialog = spectrum_dialog()
@@ -174,6 +172,9 @@ class sleep(QMainWindow, Ui_sleep):
         # Set slm for channel list
         self.channel_slm = QStringListModel()
 
+        # Percentile for spectrum colorbar
+        self.spectrum_percentile = 99.7
+
     def my_sleep(self):
         """
         Mainly for setup widgets
@@ -193,6 +194,9 @@ class sleep(QMainWindow, Ui_sleep):
         # Time editor time to go
         self.dateTimeEdit.dateTimeChanged.connect(self.data_time_go)
         self.secTimeEdit.valueChanged.connect(self.sec_time_go)
+
+        # spectrum percentile changes
+        self.spectrumPercentileEdit.valueChanged.connect(self.reset_spectrum_percentile)
 
         # Next and previous button
         self.previousWinBt.clicked.connect(self.update_previous_position)
@@ -253,11 +257,12 @@ class sleep(QMainWindow, Ui_sleep):
         # If channel list name is edited, update the channel list
         self.channel_slm.dataChanged.connect(self.update_channel_names)
 
-    def window_plot(self, reset_y_lims=True):
+    def window_plot(self, reset_y_lims=True, redraw_spectrum=False):
         """
         Main function, plot and update all the figures
 
         :param reset_y_lims: When amplify and reduction was called, don't adapt y_lims with current window
+        :param redraw_spectrum: Adjust colorbarPercentile, redraw spectrum ax
         :return:
         """
 
@@ -287,14 +292,21 @@ class sleep(QMainWindow, Ui_sleep):
         # T: time resolution, depends on window size
         # Sxx: power density, shape of (F.shape, T.shape)
         F, T, Sxx = signal.spectrogram(
-            self.data[self.default_TF_channel][position: position + self.x_window_size], fs=self.SR,
-            nperseg=self.SR * self.epoch_length, noverlap=int(self.SR * self.epoch_length / 2))
+            self.data[self.default_TF_channel][position: position + self.x_window_size], fs=self.SR, noverlap=0,
+            nperseg=self.SR)
         # Sxx = numpy.log(Sxx)
         cmap = plt.cm.get_cmap('jet')
-        self.signal_ax[0].pcolormesh(T, F, Sxx, cmap=cmap)
-        # self.signal_ax[0].colorbar()
+        # cmap = plt.cm.S
+        self.signal_ax[0].pcolormesh(T, F, Sxx, cmap=cmap, vmax=np.percentile(Sxx, self.spectrum_percentile))
 
         self.signal_ax[0].set_ylim(0, 30)
+        self.signal_ax[0].set_xticks([])
+
+        if redraw_spectrum:
+            # flush and return
+            self.signal_figure.canvas.draw()  # Redraw canvas
+            self.signal_figure.canvas.flush_events()  # Flush canvas
+            return
 
         # If marker label or start-end label is in current window, show them
         show_labels_mark = [each for each in self.marker_labels if int(each[0] * self.SR) in x]
@@ -316,11 +328,18 @@ class sleep(QMainWindow, Ui_sleep):
                 self.signal_ax[i].axvline(vline_pos[0] * self.SR, color='red', alpha=1)
             for vline_pos in show_labels_start_end:
                 self.signal_ax[i].axvline(vline_pos[0] * self.SR, color='dodgerblue', alpha=1)
-            if self.start_end and self.start_end[0] * self.SR in x:
+            if self.start_end and self.start_end[0] * self.SR - 1 in x:
                 self.signal_ax[i].axvline(self.start_end[0] * self.SR, color='lime', alpha=1)
             if len(self.start_end) == 2 and self.start_end[1] * self.SR in x:
                 self.signal_ax[i].axvline(self.start_end[1] * self.SR, color='lime', alpha=1)
             y = self.data_show[i - 1][position: position + self.x_window_size]
+
+            # if y data point number is over self.SR * 600 seconds, down sample it
+            # if len(y) > self.SR * 600:
+            #     y = down_sample(raw_data=y, data_point_num=self.SR*100)
+            #     plot_x = np.linspace(x[0], x[-1], num=self.SR*100)
+            # else:
+            #     plot_x = x
 
             if reset_y_lims:
                 self.y_lims[self.channel_show[i - 1]] = y.max()
@@ -335,9 +354,10 @@ class sleep(QMainWindow, Ui_sleep):
             self.signal_ax[i].set_ylabel(self.channel_list[self.channel_show[i - 1]])
 
             # Add axvline of each epoch
-            for axvline_positions in range(
-                    self.position_sec, self.position_sec + self.x_window_size_sec, self.epoch_length):
-                self.signal_ax[i].axvline(axvline_positions * self.SR, color='green', alpha=0.1)
+            if len(x) < self.SR * 450:
+                for axvline_positions in range(
+                        self.position_sec, self.position_sec + self.x_window_size_sec, self.epoch_length):
+                    self.signal_ax[i].axvline(axvline_positions * self.SR, color='green', alpha=0.1)
 
         # Add annotation of each axvline (except epoch line)
         for each in show_labels_mark:
@@ -349,17 +369,27 @@ class sleep(QMainWindow, Ui_sleep):
         if self.start_end and self.start_end[0] * self.SR in x:
             self.signal_ax[-1].annotate('S', xy=(self.start_end[0] * self.SR, -self.y_lims[self.channel_show[-1]]),
                                         color='lime')
-        if len(self.start_end) == 2 and self.start_end[1] * self.SR in x:
+        if len(self.start_end) == 2 and self.start_end[1] * self.SR - 1 in x:
             self.signal_ax[-1].annotate('E', xy=(self.start_end[1] * self.SR - self.x_window_size * 0.008,
                                                  -self.y_lims[self.channel_show[-1]]), color='lime')
 
         # Set xtick for the last figure, because all the figures share the same x-axis
-        self.signal_ax[-1].set_xticks(
-            [each * self.SR for each in
-             range(self.position_sec, self.position_sec + self.x_window_size_sec + 1, self.epoch_length)],
-            [each for each in
-             range(self.position_sec, self.position_sec + self.x_window_size_sec + 1, self.epoch_length)], rotation=45
-        )
+        if len(x) < self.SR * 450:
+            self.signal_ax[-1].set_xticks(
+                [each * self.SR for each in
+                 range(self.position_sec, self.position_sec + self.x_window_size_sec + 1, self.epoch_length)],
+                [each for each in
+                 range(self.position_sec, self.position_sec + self.x_window_size_sec + 1, self.epoch_length)],
+                rotation=45
+            )
+        else:
+            self.signal_ax[-1].set_xticks(
+                [each * self.SR for each in
+                 range(self.position_sec, self.position_sec + self.x_window_size_sec + 1, 50)],
+                [each for each in
+                 range(self.position_sec, self.position_sec + self.x_window_size_sec + 1, 50)],
+                rotation=45
+            )
         self.signal_figure.canvas.draw()  # Redraw canvas
         self.signal_figure.canvas.flush_events()  # Flush canvas
 
@@ -448,7 +478,11 @@ class sleep(QMainWindow, Ui_sleep):
         """
 
         # Get current second
-        sec = int(event.xdata / self.SR)
+        try:
+            sec = int(event.xdata / self.SR)
+        except TypeError as e:
+            # When click the area not including in the plot, will call this exception
+            return
 
         # If clicked right button and there is a label, alert and delete this label
         if event.button == 3:
@@ -531,7 +565,13 @@ class sleep(QMainWindow, Ui_sleep):
         self.spectrum_dialog.setWindowTitle('Spectrum: ' + str(self.start_end[0]) + '~' + str(self.start_end[1]))
         data = self.data[selected_channel[0]][
                int(self.start_end[0] * self.SR): int(self.start_end[1] * self.SR)]
-        f, Pxx_den = welch(data, self.SR, nperseg=self.epoch_length * self.SR)
+
+        # filter the data to under 50 hz
+        fnorm = np.array(50 / (.5 * self.SR))
+        b, a = butter(3, fnorm, btype='lowpass')
+
+        filtered_data = signal.filtfilt(b, a, data)
+        f, Pxx_den = welch(filtered_data, self.SR, nperseg=self.epoch_length * self.SR)
         # plt.plot(f, Pxx_den)
         # plt.show()
 
@@ -624,6 +664,15 @@ class sleep(QMainWindow, Ui_sleep):
         # Change time to second format and jump
         self.position_sec = int((date_time - datetime.datetime(2000, 1, 1, 0, 0, 0)).total_seconds())
         self.timeSlider.setValue(self.position_sec)
+
+    def reset_spectrum_percentile(self):
+        """
+        Reset spectrum color percentile
+        :return:
+        """
+
+        self.spectrum_percentile = self.spectrumPercentileEdit.value()
+        self.window_plot(redraw_spectrum=True)
 
     def update_next_position(self):
         """
@@ -940,12 +989,15 @@ class sleep(QMainWindow, Ui_sleep):
                                          '0', str(each[2]), self.stage_type_dict[each[2]]])
                               for each in sleep_stage_labels]
 
+        if len(marker_labels) > 0:
+            marker_labels = [''] + marker_labels
+        if len(start_end_labels) > 0:
+            start_end_labels = [''] + start_end_labels
         labels = ["READ ONLY! DO NOT EDIT!\n3-Wake 2-NREM 1-REM",
-                  "Channel name(s): " + ', '.join([each for each in self.channel_list]),
                   "Save time: " + datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "Acquisition time: " +
                   self.acquisition_time.toPyDateTime().strftime("%Y-%m-%d %H:%M:%S"), "Sampling rate: " + str(self.SR),
-                  "==========Marker==========", '\n'.join(marker_labels),
-                  "==========Start-End==========", '\n'.join(start_end_labels),
+                  "==========Marker==========" + '\n'.join(marker_labels),
+                  "==========Start-End==========" + '\n'.join(start_end_labels),
                   "==========Sleep stage==========", '\n'.join(sleep_stage_labels)]
 
         with open(self.label_file, 'w') as f:
@@ -1050,6 +1102,12 @@ class label_dialog(QDialog, Ui_label):
         self.cancelBt.clicked.connect(self.cancelEvent)
 
         self.slm = QStringListModel()
+
+        # QListView can not select the setting default line when first time initialize this Dialog
+        self.slm.setStringList(['1'])
+        self.listView.setModel(self.slm)
+        idx = self.slm.index(0)
+        self.listView.setCurrentIndex(idx)
         self.marker_label = marker_label
         self.start_end_label = start_end_label
         self.label_name = ''

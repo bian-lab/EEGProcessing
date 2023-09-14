@@ -122,10 +122,8 @@ class load_gui(QMainWindow, Ui_Load_data):
             self.label_file = [each.replace("\n", "") for each in f.readlines()]
 
             if len(self.label_file) == 0:
-                channel_list = [str(each) for each in range(1, self.channel_num + 1)]
                 # Initialize the labels
                 self.label_file.append("READ ONLY! DO NOT EDIT!\n3-Wake 2-NREM 1-REM")
-                self.label_file.append("\nChannel name(s): " + ', '.join(channel_list))
                 self.label_file.append("\nSave time: " + datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
                 self.label_file.append("\nAcquisition time: " +
                                        self.acquisition_time.toPyDateTime().strftime("%Y-%m-%d %H:%M:%S"))
@@ -176,11 +174,7 @@ class load_gui(QMainWindow, Ui_Load_data):
                     self.labelPathEdit.clear()
                     return
 
-                channel_list = self.label_file[2].split(": ")[1].split(", ")
-                if len(channel_list) < self.channel_num:
-                    # Channel may be deleted by user
-                    channel_list += [str(each) for each in range(len(channel_list) + 1, self.channel_num + 1)]
-                acquisition_time = datetime.datetime.strptime(self.label_file[4].split(": ")[1], "%Y-%m-%d %H:%M:%S")
+                acquisition_time = datetime.datetime.strptime(self.label_file[3].split(": ")[1], "%Y-%m-%d %H:%M:%S")
                 self.dateTimeEdit.setDateTime(acquisition_time)
             f = open(self.label_path, 'r+')
             self.label_file = [each.replace("\n", "") for each in f.readlines()]
@@ -201,8 +195,7 @@ class load_gui(QMainWindow, Ui_Load_data):
         # self.detail.exec_()
 
         win_plot.__init__(data=self.data, labels=self.labels, label_file=self.label_path,
-                          SR=self.SR, epoch_length=self.epoch_length, acquisition_time=self.acquisition_time,
-                          channel_list=channel_list)
+                          SR=self.SR, epoch_length=self.epoch_length, acquisition_time=self.acquisition_time)
 
         del self.data
         print("Check finish!")

@@ -10,6 +10,7 @@
 
 import datetime
 from itertools import groupby
+import scipy
 
 
 def second2time(second):
@@ -53,3 +54,16 @@ def lst2group(pre_lst):
 
     # Convert to [[1, 5, 2], [6, 8, 1], [9, 10, 3]]
     return [[each[0][0], each[-1][0], each[0][1]] for each in pre_lst]
+
+
+def down_sample(raw_data, data_point_num):
+    """
+    Down sample the data when there are too many data point in a row data
+    :return:
+    """
+
+    return scipy.signal.resample(raw_data, num=data_point_num)
+
+
+
+
