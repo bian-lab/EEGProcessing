@@ -123,7 +123,7 @@ class load_gui(QMainWindow, Ui_Load_data):
 
             if len(self.label_file) == 0:
                 # Initialize the labels
-                self.label_file.append("READ ONLY! DO NOT EDIT!\n3-Wake 2-NREM 1-REM")
+                self.label_file.append("READ ONLY! DO NOT EDIT!\n3-Wake 2-REM 1-NREM")
                 self.label_file.append("\nSave time: " + datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
                 self.label_file.append("\nAcquisition time: " +
                                        self.acquisition_time.toPyDateTime().strftime("%Y-%m-%d %H:%M:%S"))

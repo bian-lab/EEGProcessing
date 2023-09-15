@@ -87,7 +87,7 @@ class sleep(QMainWindow, Ui_sleep):
 
         self.SR = SR
         self.epoch_length = epoch_length
-        self.stage_type_dict = {1: 'REM', 2: 'NREM', 3: 'Wake'}
+        self.stage_type_dict = {1: 'NREM', 2: 'REM', 3: 'Wake'}
         self.acquisition_time = acquisition_time
 
         # Initialize some widgets' initial value and setup
@@ -159,10 +159,10 @@ class sleep(QMainWindow, Ui_sleep):
         self.default_TF_channel = 0
 
         # Label current window with different sleep stage, only with shortcut
-        self.remSc = QShortcut(QKeySequence('Ctrl+1'), self)
-        self.remSc.activated.connect(self.REM_window)
-        self.nremSc = QShortcut(QKeySequence('Ctrl+2'), self)
+        self.nremSc = QShortcut(QKeySequence('Ctrl+1'), self)
         self.nremSc.activated.connect(self.NREM_window)
+        self.remSc = QShortcut(QKeySequence('Ctrl+2'), self)
+        self.remSc.activated.connect(self.REM_window)
         self.wakeSc = QShortcut(QKeySequence('Ctrl+3'), self)
         self.wakeSc.activated.connect(self.Wake_window)
 
@@ -428,7 +428,7 @@ class sleep(QMainWindow, Ui_sleep):
         self.sleep_ax.set_ylim(0.5, 3.5)
         self.sleep_ax.set_xlim(0, self.total_seconds - 1)
         self.sleep_ax.xaxis.set_ticks([])
-        self.sleep_ax.yaxis.set_ticks(range(1, 4), ['REM', 'NREM', 'Wake'])
+        self.sleep_ax.yaxis.set_ticks(range(1, 4), ['NREM', 'REM', 'Wake'])
 
         self.sleep_stage_figure.canvas.draw()
         self.sleep_stage_figure.canvas.flush_events()
@@ -887,7 +887,7 @@ class sleep(QMainWindow, Ui_sleep):
         :return:
         """
 
-        self.label_all(sleep_type=1)
+        self.label_all(sleep_type=2)
 
     def NREM_window(self):
         """
@@ -895,7 +895,7 @@ class sleep(QMainWindow, Ui_sleep):
         :return:
         """
 
-        self.label_all(sleep_type=2)
+        self.label_all(sleep_type=1)
 
     def Wake_window(self):
         """
@@ -911,7 +911,7 @@ class sleep(QMainWindow, Ui_sleep):
         :return:
         """
 
-        self.label_all(sleep_type=1, start_end=True)
+        self.label_all(sleep_type=2, start_end=True)
 
     def NREM_start_end(self):
         """
@@ -919,7 +919,7 @@ class sleep(QMainWindow, Ui_sleep):
         :return:
         """
 
-        self.label_all(sleep_type=2, start_end=True)
+        self.label_all(sleep_type=1, start_end=True)
 
     def Wake_start_end(self):
         """
@@ -993,7 +993,7 @@ class sleep(QMainWindow, Ui_sleep):
             marker_labels = [''] + marker_labels
         if len(start_end_labels) > 0:
             start_end_labels = [''] + start_end_labels
-        labels = ["READ ONLY! DO NOT EDIT!\n3-Wake 2-NREM 1-REM",
+        labels = ["READ ONLY! DO NOT EDIT!\n3-Wake 2-REM 1-NREM",
                   "Save time: " + datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "Acquisition time: " +
                   self.acquisition_time.toPyDateTime().strftime("%Y-%m-%d %H:%M:%S"), "Sampling rate: " + str(self.SR),
                   "==========Marker==========" + '\n'.join(marker_labels),
