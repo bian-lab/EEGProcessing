@@ -893,12 +893,27 @@
             </property>
             <item>
              <property name="text">
+              <string>Show 30 seconds</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
               <string>Show 1 minute</string>
              </property>
             </item>
             <item>
              <property name="text">
               <string>Show 5 minutes</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>Show 30 minutes</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>Show 1 hour</string>
              </property>
             </item>
             <item>
@@ -919,21 +934,6 @@
             <item>
              <property name="text">
               <string>Show 9 epochs</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>Show 30 seconds</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>Show 30 minutes</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>Show 1 hour</string>
              </property>
             </item>
            </widget>

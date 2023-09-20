@@ -96,9 +96,8 @@ class sleep(QMainWindow, Ui_sleep):
         self.epochShow.setDisabled(True)
         self.total_seconds = ceil(self.data.shape[1] / self.SR)
         self.epochShow.setMaximum(int(self.total_seconds / self.epoch_length))
-        self.epoch_selector_dict = {0: 60, 1: 300, 2: self.epoch_length, 3: 3 * self.epoch_length,
-                                    4: 5 * self.epoch_length,
-                                    5: 9 * self.epoch_length, 6: 30, 7: 1800, 8: 3600}
+        self.epoch_selector_dict = {0: 30, 1: 60, 2: 300, 3: 1800, 4: 3600, 5: self.epoch_length,
+                                    6: 3 * self.epoch_length, 7: 5 * self.epoch_length, 8: 9 * self.epoch_length}
         self.autoScrollCheckBox.setChecked(True)  # Select auto scroll
         self.markerRadio.setChecked(True)  # Select mark radio
 
