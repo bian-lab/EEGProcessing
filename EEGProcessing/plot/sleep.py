@@ -7,6 +7,7 @@
 @Date: 2023/9/6 11:28 
 @Description:  
 """
+import atexit
 import copy
 import datetime
 from math import ceil
@@ -286,6 +287,9 @@ class sleep(QMainWindow, Ui_sleep):
 
         x = list(self.samples_x[position: position + self.x_window_size])  # Construct x-axis index
 
+        # get sleep stage
+        sleep_labels = lst2group(self.sleep_stage_labels)
+
         # Plot time-frequency figure at signal_ax[0]
         self.signal_ax[0].clear()
         # F is frequency resolution, T is time resolution, and Sxx is power matrix,
@@ -341,12 +345,9 @@ class sleep(QMainWindow, Ui_sleep):
                 self.signal_ax[i].axvline(self.start_end[1] * self.SR, color='lime', alpha=1)
             y = self.data_show[i - 1][position: position + self.x_window_size]
 
-            # if y data point number is over self.SR * 600 seconds, down sample it
-            # if len(y) > self.SR * 600:
-            #     y = down_sample(raw_data=y, data_point_num=self.SR*100)
-            #     plot_x = np.linspace(x[0], x[-1], num=self.SR*100)
-            # else:
-            #     plot_x = x
+            for each in sleep_labels:
+                if each[1] * self.SR in x:
+                    self.signal_ax[i].axvline((each[1]+1) * self.SR, color='orange', alpha=0.3)
 
             if reset_y_lims:
                 self.y_lims[self.channel_show[i - 1]] = y.max()
@@ -368,17 +369,44 @@ class sleep(QMainWindow, Ui_sleep):
 
         # Add annotation of each axvline (except epoch line)
         for each in show_labels_mark:
-            self.signal_ax[1].annotate(each[1], xy=(each[0] * self.SR, self.y_lims[self.channel_show[0]] -
-                                                    self.y_lims[self.channel_show[0]] * 0.2), color='red')
+            self.signal_ax[1].text(x=each[0] * self.SR,
+                                   y=self.y_lims[self.channel_show[0]],
+                                   s=each[1],
+                                   verticalalignment="top",
+                                   color='red')
         for each in show_labels_start_end:
-            self.signal_ax[1].annotate(each[1], xy=(each[0] * self.SR, self.y_lims[self.channel_show[0]] -
-                                                    self.y_lims[self.channel_show[0]] * 0.2), color='dodgerblue')
+            self.signal_ax[1].text(x=each[0] * self.SR,
+                                   y=self.y_lims[self.channel_show[0]],
+                                   s=each[1],
+                                   verticalalignment="top",
+                                   color='dodgerblue')
         if self.start_end and self.start_end[0] * self.SR in x:
-            self.signal_ax[-1].annotate('S', xy=(self.start_end[0] * self.SR, -self.y_lims[self.channel_show[-1]]),
-                                        color='lime')
+            self.signal_ax[-1].text(x=self.start_end[0] * self.SR,
+                                    y=-self.y_lims[self.channel_show[-1]],
+                                    s="S", color='lime')
         if len(self.start_end) == 2 and self.start_end[1] * self.SR - 1 in x:
-            self.signal_ax[-1].annotate('E', xy=(self.start_end[1] * self.SR - self.x_window_size * 0.008,
-                                                 -self.y_lims[self.channel_show[-1]]), color='lime')
+            self.signal_ax[-1].text(x=self.start_end[1] * self.SR,
+                                    y=-self.y_lims[self.channel_show[-1]],
+                                    s="E",
+                                    horizontalalignment="right",
+                                    color='lime')
+
+        # Add annotation for sleep stage
+        # Only add annotation but no axvline in the bottom of last figure
+        for each in sleep_labels:
+            if each[0] * self.SR in x:
+                self.signal_ax[-1].text(
+                    x=each[0] * self.SR,
+                    y=-self.y_lims[self.channel_show[-1]],
+                    s="s-" + self.stage_type_dict[each[2]],
+                    color='orange')
+            if each[1] * self.SR in x:
+                self.signal_ax[-1].text(
+                    x=(each[1]+1) * self.SR,
+                    y=-self.y_lims[self.channel_show[-1]],
+                    s="e-" + self.stage_type_dict[each[2]],
+                    horizontalalignment="right",
+                    color='orange')
 
         # Set xtick for the last figure, because all the figures share the same x-axis
         if len(x) < self.SR * 450:
@@ -958,6 +986,7 @@ class sleep(QMainWindow, Ui_sleep):
             self.window_plot(reset_y_lims=False)
 
         self.is_saved = False
+        self.window_plot()
         self.update_sleep_stage()
 
     def auto_save(self):
@@ -975,6 +1004,7 @@ class sleep(QMainWindow, Ui_sleep):
         :return:
         """
 
+        print("saving...")
         self.saveBt.setDisabled(True)
         # Preprocess labels in three label lists, convert to the format in the label file
         marker_labels = [
