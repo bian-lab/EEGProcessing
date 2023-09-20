@@ -56,14 +56,37 @@ def lst2group(pre_lst):
     return [[each[0][0], each[-1][0], each[0][1]] for each in pre_lst]
 
 
-def down_sample(raw_data, data_point_num):
+def get_3_stages(sleep_label_lst, data, SR):
     """
-    Down sample the data when there are too many data point in a row data
+    Divide the selected data into 3 stages
+    :param sleep_label_lst: Sleep stage label, format: [[1, 2], [2, 2], [3, 2], ...]
+    :param data: selected data, format: [[channel_1 data], [channel_2 data], ...]
+    :param SR: Sampling data, int
     :return:
     """
 
-    return scipy.signal.resample(raw_data, num=data_point_num)
+    # Group labels
+    labels = lst2group(sleep_label_lst)
+    channel_num = len(data)
 
+    NREM_data = [[] for _ in range(channel_num)]
+    REM_data = [[] for _ in range(channel_num)]
+    Wake_data = [[] for _ in range(channel_num)]
 
+    for each in labels:
+        # NREM sleep stage
+        if each[2] == 1:
+            for i in range(channel_num):
+                NREM_data[i] += list(data[i][each[0] * SR: (each[1] + 1) * SR])
 
+        # REM sleep stage
+        if each[2] == 2:
+            for i in range(channel_num):
+                REM_data[i] += list(data[i][each[0] * SR: (each[1] + 1) * SR])
 
+        # Wake sleep stage
+        if each[2] == 3:
+            for i in range(channel_num):
+                Wake_data[i] += list(data[i][each[0] * SR: (each[1] + 1) * SR])
+
+    return NREM_data, REM_data, Wake_data

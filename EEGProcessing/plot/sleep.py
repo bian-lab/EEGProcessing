@@ -25,7 +25,7 @@ from scipy.signal import butter, welch
 from EEGProcessing.gui.plot.labels import Ui_label
 from EEGProcessing.gui.plot.sleep import Ui_sleep
 from EEGProcessing.gui.plot.spectrum import Ui_spectrum
-from EEGProcessing.utils.utils import second2time, lst2group, down_sample
+from EEGProcessing.utils.utils import second2time, lst2group, get_3_stages
 
 
 class sleep(QMainWindow, Ui_sleep):
@@ -251,6 +251,7 @@ class sleep(QMainWindow, Ui_sleep):
 
         # Save selected channels' data
         self.saveDataBt.clicked.connect(self.save_selected_data)
+        self.saveSleepStageDataBt.clicked.connect(self.save_selected_data_stages)
 
         # Listen to label dialog list changes, if data changed, call update_label_list function to update
         self.label_dialog.slm.dataChanged.connect(self.update_label_list)
@@ -1055,7 +1056,57 @@ class sleep(QMainWindow, Ui_sleep):
         :return:
         """
 
-        pass
+        # Get selected channels' data
+        selected_channel = [each.row() for each in self.channelList.selectedIndexes()]
+        if len(selected_channel) == 0:
+            QMessageBox.about(self, "Error", "Please select at least 1 channel to save!")
+            return
+
+        self.setDisabled(True)
+        save_data = [self.data[idx] for idx in selected_channel]
+
+        # Get each time duration's sleep labels
+        nrem_data, rem_data, wake_data = get_3_stages(sleep_label_lst=self.sleep_stage_labels, data=save_data,
+                                                      SR=self.SR)
+        # construct 3 stages' label to save
+        nrem_labels = ', '.join([second2time(0), str(0), '1', second2time(ceil(len(nrem_data[0]) / self.SR)),
+                                 str(ceil(len(nrem_data[0]) / self.SR) - 1), '0', '1', 'NREM'])
+        rem_labels = ', '.join([second2time(0), str(0), '1', second2time(ceil(len(rem_data[0]) / self.SR)),
+                                str(ceil(len(rem_data[0]) / self.SR) - 1), '0', '2', 'REM'])
+        wake_labels = ', '.join([second2time(0), str(0), '1', second2time(ceil(len(wake_data[0]) / self.SR)),
+                                 str(ceil(len(wake_data[0]) / self.SR) - 1), '0', '3', 'Wake'])
+        labels = ["READ ONLY! DO NOT EDIT!\n3-Wake 2-REM 1-NREM",
+                  "Save time: " + datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "Acquisition time: " +
+                  self.acquisition_time.toPyDateTime().strftime("%Y-%m-%d %H:%M:%S"), "Sampling rate: " + str(self.SR),
+                  "==========Marker==========",
+                  "==========Start-End==========",
+                  "==========Sleep stage=========="]
+
+        # Get file path
+        path_ = QFileDialog.getExistingDirectory(self, "Select a folder to save 3 stages' data", "E:")
+        if path_ == '':
+            return
+
+        scipy.io.savemat(path_ + "/nrem_data.mat", mdict={'data': nrem_data})
+        scipy.io.savemat(path_ + "/rem_data.mat", mdict={'data': rem_data})
+        scipy.io.savemat(path_ + "/wake_data.mat", mdict={'data': wake_data})
+
+        with open(path_ + "/nrem_labels.txt", 'w') as f:
+            _ = copy.deepcopy(labels)
+            _.append(nrem_labels)
+            f.write('\n'.join(_))
+
+        with open(path_ + "/rem_labels.txt", 'w') as f:
+            _ = copy.deepcopy(labels)
+            _.append(rem_labels)
+            f.write('\n'.join(_))
+
+        with open(path_ + "/wake_labels.txt", 'w') as f:
+            _ = copy.deepcopy(labels)
+            _.append(wake_labels)
+            f.write('\n'.join(_))
+
+        self.setEnabled(True)
 
     def update_label_list(self):
         """
